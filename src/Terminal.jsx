@@ -222,7 +222,11 @@ function EQPanel() {
         ]);
 
         const r = quoteRes?.quoteSummary?.result?.[0];
-        if (!r) throw new Error(`No data found for ${sym}`);
+        // Check if we have at least a price — v8-only fallback has minimal data
+        const v8Only  = quoteRes?._source === "v8-chart-only";
+        if (!r?.price?.regularMarketPrice && !r?.price?.regularMarketPrice?.raw) {
+          throw new Error(`No data found for ${sym} — verify the ticker symbol is correct`);
+        }
 
         const price   = r.price || {};
         const summary = r.summaryDetail || {};
@@ -230,6 +234,9 @@ function EQPanel() {
         const fin     = r.financialData || {};
         const profile = r.assetProfile || {};
         const recTrend= r.recommendationTrend?.trend?.[0] || {};
+
+        // Helper to unwrap Yahoo raw/fmt objects OR plain numbers
+        const rv = (obj, key) => { const v = obj?.[key]; return v?.raw ?? v ?? null; };
 
         // Build rating from recommendation counts
         const buy = (recTrend.strongBuy||0) + (recTrend.buy||0);
@@ -253,43 +260,49 @@ function EQPanel() {
         const aiTxt = await fetchAI(aiPrompt, "Return ONLY valid JSON, no markdown.", 600);
         const ai = parseJSON(aiTxt) || { analysis: "Analysis unavailable.", catalysts: [], risks: [] };
 
+        // Unwrap price fields (Yahoo returns {raw, fmt} objects OR plain numbers)
+        const livePrice     = rv(price, "regularMarketPrice");
+        const liveChange    = rv(price, "regularMarketChange");
+        const liveChangePct = rv(price, "regularMarketChangePercent");
+
         setData({
           ticker:   sym,
           company:  price.longName || price.shortName || sym,
           exchange: price.exchangeName || price.fullExchangeName || "N/A",
           sector:   profile.sector || "N/A",
           industry: profile.industry || "N/A",
-          price:    price.regularMarketPrice,
-          change:   price.regularMarketChange,
-          changePct:price.regularMarketChangePercent,
-          volume:   fmtVol(price.regularMarketVolume),
-          avgVolume:fmtVol(summary.averageVolume || summary.averageDailyVolume10Day),
-          marketCap:fmtNum(price.marketCap),
-          pe:       summary.trailingPE?.raw ?? summary.trailingPE ?? null,
-          forwardPe:summary.forwardPE?.raw ?? summary.forwardPE ?? null,
-          eps:      stats.trailingEps?.raw ?? stats.trailingEps ?? null,
-          pb:       stats.priceToBook?.raw ?? stats.priceToBook ?? null,
-          evEbitda: stats.enterpriseToEbitda?.raw ?? stats.enterpriseToEbitda ?? null,
-          grossMargin:     fmtPct(fin.grossMargins?.raw ?? fin.grossMargins),
-          operatingMargin: fmtPct(fin.operatingMargins?.raw ?? fin.operatingMargins),
-          netMargin:       fmtPct(fin.profitMargins?.raw ?? fin.profitMargins),
-          revenue:   fmtNum(fin.totalRevenue?.raw ?? fin.totalRevenue),
-          ebitda:    fmtNum(fin.ebitda?.raw ?? fin.ebitda),
-          freeCashFlow: fmtNum(fin.freeCashflow?.raw ?? fin.freeCashflow),
-          debtEquity:   fin.debtToEquity?.raw ?? fin.debtToEquity ?? null,
-          currentRatio: fin.currentRatio?.raw ?? fin.currentRatio ?? null,
-          beta:     summary.beta?.raw ?? summary.beta ?? null,
-          week52High:   summary.fiftyTwoWeekHigh?.raw ?? summary.fiftyTwoWeekHigh ?? null,
-          week52Low:    summary.fiftyTwoWeekLow?.raw ?? summary.fiftyTwoWeekLow ?? null,
-          dividendYield:fmtPct(summary.dividendYield?.raw ?? summary.dividendYield) || "N/A",
-          shortInterest:stats.shortPercentOfFloat ? `${((stats.shortPercentOfFloat?.raw ?? stats.shortPercentOfFloat)*100).toFixed(1)}%` : "N/A",
+          price:    livePrice,
+          change:   liveChange,
+          changePct:liveChangePct,
+          volume:   fmtVol(rv(price, "regularMarketVolume")),
+          avgVolume:fmtVol(rv(summary, "averageVolume") || rv(summary, "averageDailyVolume10Day")),
+          marketCap:fmtNum(rv(price, "marketCap")),
+          pe:       rv(summary, "trailingPE"),
+          forwardPe:rv(summary, "forwardPE"),
+          eps:      rv(stats, "trailingEps"),
+          pb:       rv(stats, "priceToBook"),
+          evEbitda: rv(stats, "enterpriseToEbitda"),
+          grossMargin:     fmtPct(rv(fin, "grossMargins")),
+          operatingMargin: fmtPct(rv(fin, "operatingMargins")),
+          netMargin:       fmtPct(rv(fin, "profitMargins")),
+          revenue:   fmtNum(rv(fin, "totalRevenue")),
+          ebitda:    fmtNum(rv(fin, "ebitda")),
+          freeCashFlow: fmtNum(rv(fin, "freeCashflow")),
+          debtEquity:   rv(fin, "debtToEquity"),
+          currentRatio: rv(fin, "currentRatio"),
+          beta:     rv(summary, "beta"),
+          week52High:   rv(summary, "fiftyTwoWeekHigh"),
+          week52Low:    rv(summary, "fiftyTwoWeekLow"),
+          dividendYield:fmtPct(rv(summary, "dividendYield")) || "N/A",
+          shortInterest:stats.shortPercentOfFloat ? `${(rv(stats,"shortPercentOfFloat")*100).toFixed(1)}%` : "N/A",
           analystRating: rating,
           analystCount: total,
-          priceTarget:  fin.targetMeanPrice?.raw ?? fin.targetMeanPrice ?? null,
+          priceTarget:  rv(fin, "targetMeanPrice"),
           analysis: ai.analysis,
           catalysts: ai.catalysts,
           risks:     ai.risks,
           news,
+          v8Only,
         });
       } else {
         // ── CLAUDE.AI: Full AI web search path
@@ -318,6 +331,12 @@ function EQPanel() {
       {err && <Mono color={C.red} size={11} style={{display:"block",padding:"8px 0"}}>{err}</Mono>}
       {data && (
         <div>
+          {data.v8Only && (
+            <div style={{ background:"#0A0600", border:`1px solid ${C.amber}44`, padding:"6px 12px", marginBottom:8, display:"flex", alignItems:"center", gap:8 }}>
+              <Mono color={C.amber} size={9} spacing={1}>⚠ PRICE DATA ONLY</Mono>
+              <Mono color={C.textDim} size={9}>Yahoo Finance fundamentals unavailable — live price confirmed, other metrics from AI knowledge</Mono>
+            </div>
+          )}
           <div style={{ background:"#080808", border:`1px solid ${C.border}`, padding:"14px 16px", marginBottom:12, display:"flex", alignItems:"center", flexWrap:"wrap", gap:8 }}>
             <div style={{ marginRight:20 }}>
               <Mono color={C.amber} size={14} weight={700} spacing={3}>{data.ticker}</Mono>
@@ -973,7 +992,10 @@ function DESPanel() {
       if (IS_LOCAL) {
         const quoteRes = await fetchYahooQuote(sym);
         const r = quoteRes?.quoteSummary?.result?.[0];
-        if (!r) throw new Error(`No data found for ${sym}`);
+        if (!r?.price?.regularMarketPrice && !r?.price?.regularMarketPrice?.raw) {
+          throw new Error(`No data found for ${sym} — verify the ticker symbol is correct`);
+        }
+        const rv2 = (obj, key) => { const v = obj?.[key]; return v?.raw ?? v ?? null; };
         const profile = r.assetProfile || {};
         const price   = r.price || {};
         const stats   = r.defaultKeyStatistics || {};
@@ -998,11 +1020,11 @@ function DESPanel() {
           recentDevelopments: ai.recentDevelopments,
           segments: [], geography: [], customers: "See business description.", competitors: [],
           keyMetrics: [
-            { label: "Market Cap",  value: fmtNum(price.marketCap),   context: "Total equity market value" },
-            { label: "Sector",      value: profile.sector  || "N/A",  context: "GICS sector classification" },
-            { label: "Industry",    value: profile.industry|| "N/A",  context: "Industry sub-group" },
-            { label: "Employees",   value: emp,                       context: "Full-time headcount" },
-            { label: "Exchange",    value: price.exchangeName|| "N/A",context: "Listing exchange" },
+            { label: "Market Cap",  value: fmtNum(rv2(price,"marketCap")), context: "Total equity market value" },
+            { label: "Sector",      value: profile.sector   || "N/A",      context: "GICS sector classification" },
+            { label: "Industry",    value: profile.industry || "N/A",      context: "Industry sub-group" },
+            { label: "Employees",   value: emp,                            context: "Full-time headcount" },
+            { label: "Exchange",    value: price.exchangeName || price.fullExchangeName || "N/A", context: "Listing exchange" },
           ],
           indexMemberships: [], esgRating: "N/A", creditRating: "N/A", majorShareholders: [],
         });

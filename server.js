@@ -185,15 +185,89 @@ function handlePrices(req, res) {
 }
 
 // ── Route: GET /quote?symbol=AAPL ─────────────────────────────────────────────
+// Hybrid: v8/chart (always works, no auth) + v11/quoteSummary (best-effort fundamentals)
 function handleQuote(req, res) {
   const q   = url.parse(req.url, true).query;
   const sym = (q.symbol || "").toUpperCase().trim();
   if (!sym) return jsonErr(res, 400, "symbol required");
 
-  const modules = "price,summaryDetail,defaultKeyStatistics,financialData,assetProfile,recommendationTrend,majorHoldersBreakdown";
-  yahooGet(`/v11/finance/quoteSummary/${encodeURIComponent(sym)}?modules=${modules}`, (err, data, status) => {
-    if (err) return jsonErr(res, 502, `Yahoo Finance: ${err.message}`);
-    jsonOk(res, data);
+  let v8Data = null, v11Data = null, pending = 2;
+
+  function finish() {
+    pending--;
+    if (pending > 0) return;
+
+    const v8Meta  = v8Data?.chart?.result?.[0]?.meta || {};
+    const v11Res  = v11Data?.quoteSummary?.result?.[0] || null;
+
+    // If v11 worked AND has price module, return it with v8 price merged in
+    if (v11Res) {
+      // Inject live v8 price in case v11 price is stale
+      if (v8Meta.regularMarketPrice && v11Res.price) {
+        v11Res.price.regularMarketPrice     = { raw: v8Meta.regularMarketPrice,     fmt: `$${v8Meta.regularMarketPrice.toFixed(2)}` };
+        v11Res.price.regularMarketChange    = { raw: v8Meta.regularMarketPrice - (v8Meta.previousClose||v8Meta.regularMarketPrice) };
+        v11Res.price.regularMarketChangePercent = { raw: v8Meta.regularMarketChangePercent || 0 };
+      }
+      return jsonOk(res, v11Data);
+    }
+
+    // v11 failed — synthesize a minimal quoteSummary from v8 chart data
+    if (!v8Meta.regularMarketPrice) {
+      return jsonErr(res, 404, `No data found for ${sym}. Check the ticker symbol.`);
+    }
+
+    const prev = v8Meta.previousClose || v8Meta.chartPreviousClose || v8Meta.regularMarketPrice;
+    const chg  = v8Meta.regularMarketPrice - prev;
+    const chgPct = prev ? (chg / prev) * 100 : 0;
+
+    // Return a minimal structure that EQ/DES can work with
+    jsonOk(res, {
+      quoteSummary: {
+        result: [{
+          price: {
+            regularMarketPrice:        { raw: v8Meta.regularMarketPrice },
+            regularMarketChange:       { raw: chg },
+            regularMarketChangePercent:{ raw: chgPct },
+            regularMarketVolume:       { raw: v8Meta.regularMarketVolume || null },
+            marketCap:                 { raw: v8Meta.marketCap || null },
+            previousClose:             { raw: prev },
+            longName:                  v8Meta.longName || v8Meta.shortName || sym,
+            shortName:                 v8Meta.shortName || sym,
+            exchangeName:              v8Meta.exchangeName || v8Meta.fullExchangeName || "N/A",
+            currency:                  v8Meta.currency || "USD",
+          },
+          summaryDetail:        {},
+          defaultKeyStatistics: {},
+          financialData:        {},
+          assetProfile:         { longBusinessSummary: "", sector: "N/A", industry: "N/A", companyOfficers: [] },
+          recommendationTrend:  { trend: [] },
+        }],
+        error: null,
+      },
+      _source: "v8-chart-only",
+    });
+  }
+
+  // Fetch v8 chart (no auth, always works)
+  httpsGet({
+    hostname: "query1.finance.yahoo.com", port: 443,
+    path: `/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=1d&includePrePost=false`,
+    headers: {
+      "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
+      "Accept":          "application/json",
+      "Referer":         "https://finance.yahoo.com/",
+    },
+  }, (err, data) => {
+    if (!err) v8Data = data;
+    finish();
+  });
+
+  // Fetch v11 quoteSummary (best-effort fundamentals)
+  const modules = "price,summaryDetail,defaultKeyStatistics,financialData,assetProfile,recommendationTrend";
+  yahooGet(`/v11/finance/quoteSummary/${encodeURIComponent(sym)}?modules=${modules}`, (err, data) => {
+    const hasResult = !err && data?.quoteSummary?.result?.[0]?.price;
+    if (hasResult) v11Data = data;
+    finish();
   });
 }
 
