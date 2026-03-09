@@ -1,7 +1,10 @@
 import { useState, useEffect, useRef } from "react";
 
 // ─── CONFIG ─────────────────────────────────────────────────────────────────
-const API = "https://api.anthropic.com/v1/messages";
+// When running locally via `node server.js`, requests route through the local proxy.
+// When embedded in Claude.ai, requests go directly to the Anthropic API.
+const IS_LOCAL = typeof window !== "undefined" && window.location.hostname === "localhost";
+const API = IS_LOCAL ? "http://localhost:3001" : "https://api.anthropic.com/v1/messages";
 const MDL = "claude-sonnet-4-20250514";
 
 const PORTFOLIO = [
