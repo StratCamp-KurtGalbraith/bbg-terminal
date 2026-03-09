@@ -1250,7 +1250,7 @@ function WEIPanel() {
               const pct = s.changePct || 0;
               const barW = Math.min(100, Math.abs(pct) * 30);
               return (
-                <div key={s.sector} style={{ background:C.panel, border:`1px solid ${C.border}`, padding:"10px 14px` }}>
+                <div key={s.sector} style={{ background:C.panel, border:`1px solid ${C.border}`, padding:"10px 14px" }}>
                   <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
                     <Mono color={C.text} size={11}>{s.sector}</Mono>
                     <div>
