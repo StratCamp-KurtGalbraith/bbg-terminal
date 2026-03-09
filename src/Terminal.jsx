@@ -254,16 +254,16 @@ function EQPanel() {
           summary:  a.summary?.slice(0,120) || "",
         }));
 
-        // Ask Claude ONLY for analysis text + catalysts + risks (cheap: ~400 tokens out)
-        const briefData = `Ticker: ${sym}, Company: ${price.longName||sym}, Sector: ${profile.sector||"N/A"}, Industry: ${profile.industry||"N/A"}, Price: $${price.regularMarketPrice?.toFixed(2)}, Market Cap: ${fmtNum(price.marketCap)}, P/E: ${summary.trailingPE?.toFixed(1)||"N/A"}, Revenue: ${fmtNum(fin.totalRevenue)}, Net Margin: ${fmtPct(fin.profitMargins)}, FCF: ${fmtNum(fin.freeCashflow)}, Debt/Equity: ${fin.debtToEquity?.toFixed(1)||"N/A"}`;
-        const aiPrompt = `Write a 5-sentence institutional analysis for ${sym} (${price.longName||sym}), then list exactly 3 bull catalysts and 3 risk factors. Data: ${briefData}. Return ONLY JSON: {"analysis":"5 sentences","catalysts":["c1","c2","c3"],"risks":["r1","r2","r3"]}`;
-        const aiTxt = await fetchAI(aiPrompt, "Return ONLY valid JSON, no markdown.", 600);
-        const ai = parseJSON(aiTxt) || { analysis: "Analysis unavailable.", catalysts: [], risks: [] };
-
-        // Unwrap price fields (Yahoo returns {raw, fmt} objects OR plain numbers)
+        // Unwrap price fields FIRST (Yahoo returns {raw, fmt} objects OR plain numbers)
         const livePrice     = rv(price, "regularMarketPrice");
         const liveChange    = rv(price, "regularMarketChange");
         const liveChangePct = rv(price, "regularMarketChangePercent");
+
+        // Ask Claude ONLY for analysis text + catalysts + risks (cheap: ~400 tokens out)
+        const briefData = `Ticker: ${sym}, Company: ${price.longName||sym}, Sector: ${profile.sector||"N/A"}, Industry: ${profile.industry||"N/A"}, Price: $${livePrice?.toFixed(2)||"N/A"}, Market Cap: ${fmtNum(rv(price,"marketCap"))}, P/E: ${rv(summary,"trailingPE")?.toFixed?.(1)||"N/A"}, Revenue: ${fmtNum(rv(fin,"totalRevenue"))}, Net Margin: ${fmtPct(rv(fin,"profitMargins"))}, FCF: ${fmtNum(rv(fin,"freeCashflow"))}, Debt/Equity: ${rv(fin,"debtToEquity")?.toFixed?.(1)||"N/A"}`;
+        const aiPrompt = `Write a 5-sentence institutional analysis for ${sym} (${price.longName||sym}), then list exactly 3 bull catalysts and 3 risk factors. Data: ${briefData}. Return ONLY JSON: {"analysis":"5 sentences","catalysts":["c1","c2","c3"],"risks":["r1","r2","r3"]}`;
+        const aiTxt = await fetchAI(aiPrompt, "Return ONLY valid JSON, no markdown.", 600);
+        const ai = parseJSON(aiTxt) || { analysis: "Analysis unavailable.", catalysts: [], risks: [] };
 
         setData({
           ticker:   sym,
