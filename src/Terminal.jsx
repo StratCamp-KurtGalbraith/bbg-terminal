@@ -7,7 +7,8 @@ const IS_LOCAL = typeof window !== "undefined" && window.location.hostname === "
 const API = IS_LOCAL ? "http://localhost:3001" : "https://api.anthropic.com/v1/messages";
 const MDL = IS_LOCAL ? "claude-sonnet-4-6" : "claude-sonnet-4-20250514";
 
-const PORTFOLIO = [
+// Default portfolio — loaded from localStorage if available
+const DEFAULT_PORTFOLIO = [
   { sym: "GLD", qty: 20,  cost: 488.770, name: "SPDR Gold Shares ETF",  sector: "Commodity"   },
   { sym: "XOM", qty: 62,  cost: 155.255, name: "Exxon Mobil Corp",      sector: "Energy"       },
   { sym: "RTX", qty: 58,  cost: 209.870, name: "RTX Corporation",       sector: "Defense"      },
@@ -15,7 +16,16 @@ const PORTFOLIO = [
   { sym: "FRO", qty: 62,  cost: 38.127,  name: "Frontline PLC",         sector: "Shipping"     },
   { sym: "FLR", qty: 50,  cost: 51.597,  name: "Fluor Corporation",     sector: "Engineering"  },
 ];
-const CASH = 10000;
+const DEFAULT_CASH = 10000;
+const DEFAULT_WATCHLIST = ["SPY","QQQ","NVDA","AAPL","MSFT","META","TSLA","BTC-USD"];
+
+function loadFromStorage(key, fallback) {
+  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
+  catch(e) { return fallback; }
+}
+function saveToStorage(key, val) {
+  try { localStorage.setItem(key, JSON.stringify(val)); } catch(e) {}
+}
 
 // ─── THEME ───────────────────────────────────────────────────────────────────
 const C = {
@@ -408,76 +418,138 @@ function EQPanel() {
 
 // ─── F2: PORT — PORTFOLIO ────────────────────────────────────────────────────
 function PORTPanel() {
-  const [prices, setPrices] = useState({});
-  const [analysis, setAnalysis] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [aLoading, setALoading] = useState(false);
-  const [ts, setTs] = useState("");
+  const [portfolio, setPortfolio] = useState(() => loadFromStorage("bbg_portfolio", DEFAULT_PORTFOLIO));
+  const [cash, setCash]           = useState(() => loadFromStorage("bbg_cash", DEFAULT_CASH));
+  const [watchlist, setWatchlist] = useState(() => loadFromStorage("bbg_watchlist", DEFAULT_WATCHLIST));
+  const [prices, setPrices]       = useState({});
+  const [analysis, setAnalysis]   = useState("");
+  const [loading, setLoading]     = useState(false);
+  const [aLoading, setALoading]   = useState(false);
+  const [ts, setTs]               = useState("");
+  const [tab, setTab]             = useState("portfolio"); // "portfolio" | "watchlist"
+  const [showAdd, setShowAdd]     = useState(false);
+  const [editIdx, setEditIdx]     = useState(null);
+  const [form, setForm]           = useState({ sym:"", qty:"", cost:"", name:"", sector:"" });
+  const [formErr, setFormErr]     = useState("");
 
-  const totalCost = PORTFOLIO.reduce((s,p) => s + p.qty * p.cost, 0);
-  const hasPrices = Object.keys(prices).length > 0;
-  const totalMktVal = hasPrices ? PORTFOLIO.reduce((s,p) => s + p.qty * (prices[p.sym]||p.cost), 0) : null;
-  const totalPnL = totalMktVal ? totalMktVal - totalCost : null;
-  const pnlPct = totalPnL ? (totalPnL/totalCost)*100 : null;
-  const pnlColor = pnlPct > 0 ? C.green : pnlPct < 0 ? C.red : C.text;
-  const portTotal = (totalMktVal||totalCost) + CASH;
+  // Persist on every change
+  useEffect(() => { saveToStorage("bbg_portfolio", portfolio); }, [portfolio]);
+  useEffect(() => { saveToStorage("bbg_cash", cash); }, [cash]);
+  useEffect(() => { saveToStorage("bbg_watchlist", watchlist); }, [watchlist]);
+
+  const totalCost   = portfolio.reduce((s,p) => s + p.qty * p.cost, 0);
+  const hasPrices   = Object.keys(prices).length > 0;
+  const totalMktVal = hasPrices ? portfolio.reduce((s,p) => s + p.qty * (prices[p.sym]??p.cost), 0) : null;
+  const totalPnL    = totalMktVal != null ? totalMktVal - totalCost : null;
+  const pnlPct      = totalPnL != null ? (totalPnL / totalCost) * 100 : null;
+  const pnlColor    = pnlPct > 0 ? C.green : pnlPct < 0 ? C.red : C.text;
+  const portTotal   = (totalMktVal ?? totalCost) + cash;
+  const today       = new Date();
+  const daysLeft    = Math.ceil((new Date("2026-04-02") - today) / 86400000);
+
+  const allSyms = [...new Set([...portfolio.map(p => p.sym), ...watchlist])];
 
   const refresh = async () => {
     setLoading(true);
     try {
       if (IS_LOCAL) {
-        // Use Yahoo Finance via local proxy — real-time accurate prices
-        const syms = PORTFOLIO.map(p => p.sym);
-        const data = await fetchLivePrices(syms);
+        const data = await fetchLivePrices(allSyms);
         if (data?.prices) { setPrices(data.prices); setTs(data.timestamp || ""); }
       } else {
-        // Claude.ai: use AI web search
-        const syms = PORTFOLIO.map(p=>p.sym).join(", ");
-        const prompt = `Search for TODAY's current real-time stock prices for: ${syms}. Return ONLY: {"prices":{"GLD":number,"XOM":number,"RTX":number,"LMT":number,"FRO":number,"FLR":number},"timestamp":"current datetime string"}`;
-        const txt = await fetchAI(prompt, "Return ONLY valid compact JSON, no markdown.", 800);
+        const syms = portfolio.map(p => p.sym).join(",");
+        const prompt = `Search TODAY's prices for: ${syms}. Return ONLY JSON: {"prices":{${portfolio.map(p=>`"${p.sym}":number`).join(",")}},"timestamp":"now"}`;
+        const txt = await fetchAI(prompt, "Return ONLY valid compact JSON.", 800);
         const parsed = parseJSON(txt);
         if (parsed?.prices) { setPrices(parsed.prices); setTs(parsed.timestamp||""); }
       }
-    } catch(e) { console.error("Price refresh error:", e); }
+    } catch(e) { console.error("Refresh error:", e); }
     setLoading(false);
   };
 
   const getAnalysis = async () => {
     setALoading(true);
     try {
-      const pos = PORTFOLIO.map(p => ({ sym:p.sym, name:p.name, qty:p.qty, costBasis:p.cost, currentPrice:prices[p.sym]||null }));
-      const prompt = `You are a senior portfolio manager reviewing a geopolitical conflict investment portfolio (thesis: US-Israel military ops vs Iran / Op Epic Fury, Strait of Hormuz disruption, Qatar LNG halt, Ras Tanura attack risk). Mandatory exit evaluation date: April 2, 2026.
-
-Positions: ${JSON.stringify(pos)}
-Cash Reserve: $${CASH.toLocaleString()}
-
-Use web search for latest geopolitical news affecting this thesis. Write a structured 6-paragraph institutional portfolio review:
-1. Thesis validation: current geopolitical status and whether the thesis is intact
-2. Best-performing position — hold, add, or trim?
-3. Weakest position (especially FRO — tanker dynamics, Iran/Hormuz sensitivity) — exit strategy?
-4. Portfolio risk: concentration, sector overlap, macro tail risks, currency exposure
-5. Key monitoring datapoints before April 2 exit window (what to watch)
-6. Overall recommendation: hold core, selective exit, full exit, or rebalance
-
-Be direct, institutional, and specific. Cite specific market levels and geopolitical data.`;
+      const pos = portfolio.map(p => ({ sym:p.sym, name:p.name, qty:p.qty, cost:p.cost, price:prices[p.sym]||null }));
+      const prompt = `Senior portfolio manager review. Positions: ${JSON.stringify(pos)}. Cash: $${cash.toLocaleString()}. Today: ${new Date().toLocaleDateString()}.
+Write a structured institutional review covering: thesis validation, top performer, weakest position, key risks, monitoring points, overall recommendation. Be specific.`;
       const txt = await fetchAI(prompt, "", 2000);
       setAnalysis(txt);
     } catch(e) { setAnalysis(`Error: ${e.message}`); }
     setALoading(false);
   };
 
-  const today = new Date();
-  const daysLeft = Math.ceil((new Date("2026-04-02") - today) / 86400000);
+  // ── Add / Edit position ───────────────────────────────────────────────────
+  const openAdd = () => {
+    setForm({ sym:"", qty:"", cost:"", name:"", sector:"" });
+    setFormErr(""); setEditIdx(null); setShowAdd(true);
+  };
+  const openEdit = (idx) => {
+    const p = portfolio[idx];
+    setForm({ sym:p.sym, qty:String(p.qty), cost:String(p.cost), name:p.name, sector:p.sector||"" });
+    setFormErr(""); setEditIdx(idx); setShowAdd(true);
+  };
+  const closeForm = () => { setShowAdd(false); setEditIdx(null); };
+
+  const savePosition = async () => {
+    const sym = form.sym.toUpperCase().trim();
+    const qty = parseFloat(form.qty);
+    const cost = parseFloat(form.cost);
+    if (!sym) return setFormErr("Ticker required");
+    if (isNaN(qty) || qty <= 0) return setFormErr("Valid quantity required");
+    if (isNaN(cost) || cost <= 0) return setFormErr("Valid cost basis required");
+    if (editIdx === null && portfolio.find(p => p.sym === sym)) return setFormErr(`${sym} already in portfolio`);
+
+    let name = form.name.trim();
+    let sector = form.sector.trim() || "Equity";
+
+    // Auto-fetch name from Yahoo if blank
+    if (!name && IS_LOCAL) {
+      try {
+        const d = await fetchLivePrices([sym]);
+        name = d?.details?.[sym] ? sym : sym; // fallback to sym
+      } catch(e) { name = sym; }
+    }
+    if (!name) name = sym;
+
+    const newPos = { sym, qty, cost, name, sector };
+    if (editIdx !== null) {
+      setPortfolio(prev => prev.map((p,i) => i === editIdx ? newPos : p));
+    } else {
+      setPortfolio(prev => [...prev, newPos]);
+    }
+    closeForm();
+  };
+
+  const removePosition = (idx) => {
+    setPortfolio(prev => prev.filter((_,i) => i !== idx));
+  };
+
+  // ── Watchlist management ─────────────────────────────────────────────────
+  const [wInput, setWInput] = useState("");
+  const addToWatchlist = () => {
+    const sym = wInput.toUpperCase().trim();
+    if (!sym) return;
+    if (!watchlist.includes(sym)) setWatchlist(prev => [...prev, sym]);
+    setWInput("");
+  };
+  const removeFromWatchlist = (sym) => setWatchlist(prev => prev.filter(s => s !== sym));
+
+  // ── Input style helper ─────────────────────────────────────────────────
+  const inputStyle = {
+    background: "#111", border: `1px solid ${C.border}`, color: C.white,
+    fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, padding: "5px 8px", outline: "none",
+  };
 
   return (
     <div>
+      {/* ── Summary stats ── */}
       <div style={{ display:"grid", gridTemplateColumns:"repeat(5,1fr)", gap:8, marginBottom:12 }}>
         {[
-          { label:"PORTFOLIO VALUE",  value:`$${portTotal.toLocaleString("en",{maximumFractionDigits:0})}`,      color:C.white   },
-          { label:"TOTAL COST BASIS", value:`$${(totalCost+CASH).toLocaleString("en",{maximumFractionDigits:0})}`, color:C.text   },
-          { label:"UNREALIZED P&L",   value:totalPnL?`${totalPnL>0?"+":""}$${Math.abs(totalPnL).toLocaleString("en",{maximumFractionDigits:0})}`:"—", color:pnlColor },
-          { label:"TOTAL RETURN",     value:pnlPct?`${pnlPct>0?"+":""}${pnlPct.toFixed(2)}%`:"—", color:pnlColor },
-          { label:"EXIT WINDOW",      value:`${daysLeft}d → APR 2`,  color:daysLeft<14?C.red:C.amber },
+          { label:"PORTFOLIO VALUE",  value:`$${portTotal.toLocaleString("en",{maximumFractionDigits:0})}`,       color:C.white   },
+          { label:"TOTAL COST BASIS", value:`$${(totalCost+cash).toLocaleString("en",{maximumFractionDigits:0})}`, color:C.text    },
+          { label:"UNREALIZED P&L",   value:totalPnL!=null?`${totalPnL>0?"+":""}$${Math.abs(totalPnL).toLocaleString("en",{maximumFractionDigits:0})}`:"—", color:pnlColor },
+          { label:"TOTAL RETURN",     value:pnlPct!=null?`${pnlPct>0?"+":""}${pnlPct.toFixed(2)}%`:"—",           color:pnlColor  },
+          { label:"POSITIONS",        value:`${portfolio.length} + $${(cash/1000).toFixed(0)}K cash`,              color:C.amber   },
         ].map(({label,value,color}) => (
           <div key={label} style={{ background:C.panel, border:`1px solid ${C.border}`, padding:"10px 12px" }}>
             <Mono color={C.textDim} size={8} spacing={0.5} style={{display:"block",marginBottom:5}}>{label}</Mono>
@@ -485,55 +557,150 @@ Be direct, institutional, and specific. Cite specific market levels and geopolit
           </div>
         ))}
       </div>
-      <div style={{ background:"#0A0800", border:`1px solid ${C.amberDim}`, padding:"8px 14px", marginBottom:12 }}>
-        <Mono color={C.amberDim} size={9} spacing={1}>THESIS: </Mono>
-        <Mono color={C.textDim} size={10}>Op Epic Fury / Iran conflict · Strait of Hormuz disruption · Qatar LNG / Saudi Ras Tanura attack risk · Defense + Energy + Commodities + Shipping</Mono>
-      </div>
-      <div style={{ background:C.panel, border:`1px solid ${C.border}`, marginBottom:12 }}>
-        <div style={{ display:"grid", gridTemplateColumns:"70px 160px 75px 50px 70px 80px 90px 75px 65px", background:"#0A0A0A", padding:"7px 12px", borderBottom:`1px solid ${C.border}` }}>
-          {["TICKER","NAME","SECTOR","QTY","COST","PRICE","MKT VALUE","P&L $","P&L %"].map(h => <Mono key={h} color={C.amber} size={8} spacing={0.5}>{h}</Mono>)}
+
+      {/* ── Tab bar + action buttons ── */}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+        <div style={{ display:"flex", gap:6 }}>
+          {[["portfolio","PORTFOLIO"],["watchlist","WATCHLIST"]].map(([k,l]) => (
+            <button key={k} onClick={() => setTab(k)} style={{ background:tab===k?C.amber+"22":"transparent", color:tab===k?C.amber:C.muted, border:`1px solid ${tab===k?C.amber:C.border}`, fontFamily:"'IBM Plex Mono',monospace", fontSize:9, fontWeight:700, padding:"5px 16px", cursor:"pointer", letterSpacing:1 }}>{l}</button>
+          ))}
         </div>
-        {PORTFOLIO.map(p => {
-          const price = prices[p.sym];
-          const val = price ? price * p.qty : null;
-          const pnl = price ? (price - p.cost) * p.qty : null;
-          const pct = price ? ((price - p.cost)/p.cost)*100 : null;
-          const pc = pnl > 0 ? C.green : pnl < 0 ? C.red : C.text;
-          return (
-            <div key={p.sym} style={{ display:"grid", gridTemplateColumns:"70px 160px 75px 50px 70px 80px 90px 75px 65px", padding:"7px 12px", borderBottom:`1px solid ${C.border}` }}>
-              <Mono color={C.amber} size={12} weight={700}>{p.sym}</Mono>
-              <Mono color={C.textDim} size={10}>{p.name}</Mono>
-              <Mono color={C.muted} size={9}>{p.sector}</Mono>
-              <Mono color={C.text} size={11}>{p.qty}</Mono>
-              <Mono color={C.text} size={11}>${p.cost.toFixed(2)}</Mono>
-              <Mono color={price?C.cyan:C.muted} size={11} weight={price?600:400}>{price?`$${price.toFixed(2)}`:"—"}</Mono>
-              <Mono color={C.text} size={11}>{val?`$${val.toLocaleString("en",{maximumFractionDigits:0})}`:"—"}</Mono>
-              <Mono color={pc} size={11} weight={600}>{pnl!=null?`${pnl>0?"+":""}$${Math.abs(pnl).toFixed(0)}`:"—"}</Mono>
-              <Mono color={pc} size={11} weight={600}>{pct!=null?`${pct>0?"+":""}${pct.toFixed(1)}%`:"—"}</Mono>
+        <div style={{ display:"flex", gap:6 }}>
+          <Btn onClick={refresh} disabled={loading} variant="outline">{loading?"FETCHING...":"↺ REFRESH ALL"}</Btn>
+          <Btn onClick={openAdd}>+ ADD POSITION</Btn>
+          <Btn onClick={getAnalysis} disabled={aLoading} variant="outline" color={C.purple}>{aLoading?"ANALYZING...":"AI REVIEW"}</Btn>
+        </div>
+      </div>
+
+      {/* ── Add/Edit form modal ── */}
+      {showAdd && (
+        <div style={{ background:"#0A0A0A", border:`1px solid ${C.amber}`, padding:16, marginBottom:12 }}>
+          <Mono color={C.amber} size={10} spacing={1} style={{display:"block",marginBottom:12}}>{editIdx!==null?"EDIT POSITION":"ADD NEW POSITION"}</Mono>
+          <div style={{ display:"grid", gridTemplateColumns:"100px 80px 100px 1fr 120px", gap:8, marginBottom:10 }}>
+            {[
+              { key:"sym", label:"TICKER", placeholder:"AAPL" },
+              { key:"qty", label:"QTY",    placeholder:"100" },
+              { key:"cost",label:"COST BASIS",placeholder:"182.50" },
+              { key:"name",label:"NAME (optional)",placeholder:"Apple Inc." },
+              { key:"sector",label:"SECTOR (optional)",placeholder:"Technology" },
+            ].map(({key,label,placeholder}) => (
+              <div key={key}>
+                <Mono color={C.textDim} size={8} spacing={0.5} style={{display:"block",marginBottom:3}}>{label}</Mono>
+                <input
+                  value={form[key]}
+                  onChange={e => setForm(prev => ({...prev, [key]: e.target.value}))}
+                  onKeyDown={e => e.key==="Enter" && savePosition()}
+                  placeholder={placeholder}
+                  style={{...inputStyle, width:"100%", boxSizing:"border-box"}}
+                  disabled={key==="sym" && editIdx!==null}
+                />
+              </div>
+            ))}
+          </div>
+          {formErr && <Mono color={C.red} size={10} style={{display:"block",marginBottom:8}}>{formErr}</Mono>}
+          <div style={{ display:"flex", gap:8 }}>
+            <Btn onClick={savePosition}>{editIdx!==null?"SAVE CHANGES":"ADD TO PORTFOLIO"}</Btn>
+            <Btn onClick={closeForm} variant="outline">CANCEL</Btn>
+          </div>
+        </div>
+      )}
+
+      {/* ── Portfolio tab ── */}
+      {tab === "portfolio" && (
+        <div style={{ background:C.panel, border:`1px solid ${C.border}`, marginBottom:12 }}>
+          <div style={{ display:"grid", gridTemplateColumns:"65px 150px 70px 50px 70px 80px 85px 75px 65px 60px", background:"#0A0A0A", padding:"7px 12px", borderBottom:`1px solid ${C.border}` }}>
+            {["TICKER","NAME","SECTOR","QTY","COST","PRICE","MKT VALUE","P&L $","P&L %",""].map((h,i) => <Mono key={i} color={C.amber} size={8} spacing={0.5}>{h}</Mono>)}
+          </div>
+          {portfolio.length === 0 && (
+            <div style={{ padding:"24px 12px", textAlign:"center" }}>
+              <Mono color={C.muted} size={11}>No positions. Click + ADD POSITION to get started.</Mono>
             </div>
-          );
-        })}
-        <div style={{ display:"grid", gridTemplateColumns:"70px 160px 75px 50px 70px 80px 90px 75px 65px", padding:"7px 12px", background:"#0A0A0A" }}>
-          <Mono color={C.textDim} size={11}>CASH</Mono>
-          <Mono color={C.textDim} size={10}>Reserve</Mono>
-          <span/><span/><span/><span/>
-          <Mono color={C.text} size={11}>${CASH.toLocaleString()}</Mono>
+          )}
+          {portfolio.map((p,idx) => {
+            const price = prices[p.sym];
+            const val   = price != null ? price * p.qty : null;
+            const pnl   = price != null ? (price - p.cost) * p.qty : null;
+            const pct   = price != null ? ((price - p.cost)/p.cost)*100 : null;
+            const pc    = pnl > 0 ? C.green : pnl < 0 ? C.red : C.text;
+            return (
+              <div key={p.sym} style={{ display:"grid", gridTemplateColumns:"65px 150px 70px 50px 70px 80px 85px 75px 65px 60px", padding:"7px 12px", borderBottom:`1px solid ${C.border}`, alignItems:"center" }}>
+                <Mono color={C.amber} size={12} weight={700}>{p.sym}</Mono>
+                <Mono color={C.textDim} size={10}>{p.name}</Mono>
+                <Mono color={C.muted} size={9}>{p.sector}</Mono>
+                <Mono color={C.text} size={11}>{p.qty}</Mono>
+                <Mono color={C.text} size={11}>${p.cost.toFixed(2)}</Mono>
+                <Mono color={price!=null?C.cyan:C.muted} size={11} weight={price!=null?600:400}>{price!=null?`$${price.toFixed(2)}`:"—"}</Mono>
+                <Mono color={C.text} size={11}>{val!=null?`$${val.toLocaleString("en",{maximumFractionDigits:0})}`:"—"}</Mono>
+                <Mono color={pc} size={11} weight={600}>{pnl!=null?`${pnl>0?"+":""}$${Math.abs(pnl).toFixed(0)}`:"—"}</Mono>
+                <Mono color={pc} size={11} weight={600}>{pct!=null?`${pct>0?"+":""}${pct.toFixed(1)}%`:"—"}</Mono>
+                <div style={{ display:"flex", gap:4 }}>
+                  <button onClick={() => openEdit(idx)} style={{ background:"transparent", color:C.textDim, border:`1px solid ${C.border}`, fontFamily:"'IBM Plex Mono',monospace", fontSize:8, padding:"2px 6px", cursor:"pointer" }}>EDIT</button>
+                  <button onClick={() => removePosition(idx)} style={{ background:"transparent", color:C.red+"99", border:`1px solid ${C.red}33`, fontFamily:"'IBM Plex Mono',monospace", fontSize:8, padding:"2px 6px", cursor:"pointer" }}>✕</button>
+                </div>
+              </div>
+            );
+          })}
+          <div style={{ display:"grid", gridTemplateColumns:"65px 150px 70px 50px 70px 80px 85px 75px 65px 60px", padding:"7px 12px", background:"#0A0A0A" }}>
+            <Mono color={C.textDim} size={11}>CASH</Mono>
+            <Mono color={C.textDim} size={10}>Reserve</Mono>
+            <span/><span/><span/><span/>
+            <Mono color={C.text} size={11}>${cash.toLocaleString()}</Mono>
+          </div>
         </div>
-      </div>
-      {ts && <div style={{ marginBottom:8 }}><Mono color={C.muted} size={9}>Prices as of: {ts}</Mono></div>}
-      <div style={{ display:"flex", gap:8, marginBottom:16 }}>
-        <Btn onClick={refresh} disabled={loading}>{loading?"FETCHING...":"REFRESH LIVE PRICES"}</Btn>
-        <Btn onClick={getAnalysis} disabled={aLoading} variant="outline">{aLoading?"ANALYZING...":"AI PORTFOLIO REVIEW"}</Btn>
-      </div>
+      )}
+
+      {/* ── Watchlist tab ── */}
+      {tab === "watchlist" && (
+        <div style={{ marginBottom:12 }}>
+          {/* Add to watchlist */}
+          <div style={{ display:"flex", gap:8, marginBottom:12, alignItems:"center" }}>
+            <input
+              value={wInput}
+              onChange={e => setWInput(e.target.value.toUpperCase())}
+              onKeyDown={e => e.key==="Enter" && addToWatchlist()}
+              placeholder="ADD TICKER TO WATCHLIST (e.g. NVDA)"
+              style={{...inputStyle, flex:1}}
+            />
+            <Btn onClick={addToWatchlist}>+ ADD</Btn>
+          </div>
+          <div style={{ background:C.panel, border:`1px solid ${C.border}` }}>
+            <div style={{ display:"grid", gridTemplateColumns:"80px 1fr 100px 100px 100px 50px", background:"#0A0A0A", padding:"7px 12px", borderBottom:`1px solid ${C.border}` }}>
+              {["TICKER","","PRICE","CHG","CHG %",""].map((h,i) => <Mono key={i} color={C.amber} size={8} spacing={0.5}>{h}</Mono>)}
+            </div>
+            {watchlist.length === 0 && (
+              <div style={{ padding:"24px 12px", textAlign:"center" }}>
+                <Mono color={C.muted} size={11}>Watchlist empty. Type a ticker above and press Enter.</Mono>
+              </div>
+            )}
+            {watchlist.map(sym => {
+              const d   = prices[sym];
+              const chgColor = d?.changePct > 0 ? C.green : d?.changePct < 0 ? C.red : C.text;
+              return (
+                <div key={sym} style={{ display:"grid", gridTemplateColumns:"80px 1fr 100px 100px 100px 50px", padding:"8px 12px", borderBottom:`1px solid ${C.border}`, alignItems:"center" }}>
+                  <Mono color={C.cyan} size={12} weight={700}>{sym}</Mono>
+                  <span/>
+                  <Mono color={d?C.white:C.muted} size={11} weight={600}>{d?.price!=null?`$${d.price.toFixed(2)}`:"—"}</Mono>
+                  <Mono color={chgColor} size={11}>{d?.change!=null?`${d.change>0?"+":""}${d.change.toFixed(2)}`:"—"}</Mono>
+                  <Mono color={chgColor} size={11} weight={600}>{d?.changePct!=null?`${d.changePct>0?"+":""}${d.changePct.toFixed(2)}%`:"—"}</Mono>
+                  <button onClick={() => removeFromWatchlist(sym)} style={{ background:"transparent", color:C.red+"99", border:`1px solid ${C.red}33`, fontFamily:"'IBM Plex Mono',monospace", fontSize:8, padding:"2px 6px", cursor:"pointer" }}>✕</button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {ts && <div style={{ marginBottom:8 }}><Mono color={C.muted} size={9}>Prices as of: {new Date(ts).toLocaleString()}</Mono></div>}
+
+      {/* ── AI analysis ── */}
       {analysis && (
-        <PanelBox title="PORTFOLIO MANAGER REVIEW — GEOPOLITICAL THESIS">
+        <PanelBox title="PORTFOLIO MANAGER REVIEW">
           <div style={{ color:C.text, fontFamily:"'IBM Plex Mono',monospace", fontSize:11, lineHeight:2, whiteSpace:"pre-wrap" }}>{analysis}</div>
         </PanelBox>
       )}
     </div>
   );
 }
-
 // ─── F3: NEWS — MARKET INTELLIGENCE ─────────────────────────────────────────
 function NEWSPanel() {
   const [input, setInput] = useState("");
