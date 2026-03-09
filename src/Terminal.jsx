@@ -5,7 +5,7 @@ import { useState, useEffect, useRef } from "react";
 // When embedded in Claude.ai, requests go directly to the Anthropic API.
 const IS_LOCAL = typeof window !== "undefined" && window.location.hostname === "localhost";
 const API = IS_LOCAL ? "http://localhost:3001" : "https://api.anthropic.com/v1/messages";
-const MDL = "claude-sonnet-4-20250514";
+const MDL = IS_LOCAL ? "claude-sonnet-4-6" : "claude-sonnet-4-20250514";
 
 const PORTFOLIO = [
   { sym: "GLD", qty: 20,  cost: 488.770, name: "SPDR Gold Shares ETF",  sector: "Commodity"   },
@@ -40,20 +40,29 @@ const FUNCS = [
 ];
 
 // ─── API HELPER ──────────────────────────────────────────────────────────────
+// Web search tool is only available inside Claude.ai — stripped for local API calls
 async function fetchAI(prompt, sys = "", maxTokens = 2000) {
   const body = {
     model: MDL,
     max_tokens: maxTokens,
-    tools: [{ type: "web_search_20250305", name: "web_search" }],
     messages: [{ role: "user", content: prompt }],
   };
+  // web_search_20250305 is a Claude.ai-only tool; omit when calling API directly
+  if (!IS_LOCAL) {
+    body.tools = [{ type: "web_search_20250305", name: "web_search" }];
+  }
   if (sys) body.system = sys;
+  const headers = { "Content-Type": "application/json" };
+  if (!IS_LOCAL) headers["anthropic-version"] = "2023-06-01";
   const r = await fetch(API, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(body),
   });
-  if (!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`);
+  if (!r.ok) {
+    const errText = await r.text();
+    throw new Error(`HTTP ${r.status}: ${errText}`);
+  }
   const d = await r.json();
   return (d.content || []).filter(b => b.type === "text").map(b => b.text).join("\n");
 }
