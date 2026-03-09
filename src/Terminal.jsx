@@ -74,28 +74,64 @@ function parseJSON(txt) {
   return null;
 }
 
-// ─── YAHOO FINANCE HELPERS (local only) ──────────────────────────────────────
+// ─── LOCAL DATA API HELPERS ──────────────────────────────────────────────────
 const PROXY = "http://localhost:3001";
 
-async function fetchLivePrices(symbols) {
-  // symbols: array like ["GLD","XOM","RTX"]
-  const r = await fetch(`${PROXY}/prices?symbols=${symbols.join(",")}`);
-  if (!r.ok) throw new Error(`Yahoo prices HTTP ${r.status}`);
-  return r.json(); // { prices: {SYM: number}, details: {...}, timestamp: "..." }
-}
-
-async function fetchLiveQuote(symbol) {
-  const r = await fetch(`${PROXY}/quote?symbol=${symbol}`);
-  if (!r.ok) throw new Error(`Yahoo quote HTTP ${r.status}`);
+async function apiGet(path) {
+  const r = await fetch(`${PROXY}${path}`);
+  if (!r.ok) { const t = await r.text(); throw new Error(t); }
   return r.json();
 }
 
+async function fetchLivePrices(symbols) {
+  return apiGet(`/prices?symbols=${symbols.join(",")}`);
+}
+
+async function fetchYahooQuote(symbol) {
+  return apiGet(`/quote?symbol=${encodeURIComponent(symbol)}`);
+}
+
+async function fetchYahooFinancials(symbol) {
+  return apiGet(`/financials?symbol=${encodeURIComponent(symbol)}`);
+}
+
+async function fetchMacroData() {
+  return apiGet("/macro");
+}
+
+async function fetchWorldIndices() {
+  return apiGet("/worldindices");
+}
+
+async function fetchNews(query, pageSize = 8) {
+  return apiGet(`/news?q=${encodeURIComponent(query)}&pageSize=${pageSize}`);
+}
+
+async function fetchEcoCalendar() {
+  return apiGet("/calendar");
+}
+
+// Format large numbers
 function fmtNum(n, decimals = 2) {
   if (n == null) return null;
   if (Math.abs(n) >= 1e12) return `$${(n/1e12).toFixed(1)}T`;
   if (Math.abs(n) >= 1e9)  return `$${(n/1e9).toFixed(1)}B`;
   if (Math.abs(n) >= 1e6)  return `$${(n/1e6).toFixed(1)}M`;
   return `$${n.toFixed(decimals)}`;
+}
+
+function fmtPct(n) { return n != null ? `${(n*100).toFixed(1)}%` : null; }
+function fmtVol(n) { if (!n) return null; return n > 1e6 ? `${(n/1e6).toFixed(1)}M` : `${(n/1e3).toFixed(0)}K`; }
+
+// Classify news headline sentiment by keyword
+function classifyHeadline(text) {
+  if (!text) return "NEUTRAL";
+  const t = text.toLowerCase();
+  const bull = /surge|soar|jump|rise|gain|beat|record|upgrade|rally|strong|growth|profit|win|expan|positive|boost|accelerat/;
+  const bear = /fall|drop|plunge|decline|miss|loss|cut|downgrade|concern|risk|weak|slow|crisis|crash|warn|disappoint|reduc/;
+  if (bull.test(t)) return "BULLISH";
+  if (bear.test(t)) return "BEARISH";
+  return "NEUTRAL";
 }
 
 // ─── SHARED COMPONENTS ───────────────────────────────────────────────────────
@@ -168,40 +204,90 @@ function EQPanel() {
     setLoading(true); setErr(""); setData(null);
     const sym = input.toUpperCase().trim();
     try {
-      let livePrice = null, liveChange = null, liveChangePct = null, liveVolume = null, liveMktCap = null;
-
-      // Step 1: Pull real-time price from Yahoo Finance when running locally
       if (IS_LOCAL) {
-        try {
-          const priceData = await fetchLivePrices([sym]);
-          const d = priceData?.details?.[sym];
-          if (d) {
-            livePrice     = d.price;
-            liveChange    = d.change;
-            liveChangePct = d.changePct;
-            liveVolume    = d.volume ? (d.volume > 1e6 ? `${(d.volume/1e6).toFixed(1)}M` : `${(d.volume/1e3).toFixed(0)}K`) : null;
-            liveMktCap    = d.marketCap ? fmtNum(d.marketCap, 0) : null;
-          }
-        } catch(e) { console.warn("Yahoo price fetch failed, falling back to AI:", e.message); }
-      }
+        // ── LOCAL: Real data from Yahoo Finance + short Claude call for analysis text only
+        const [quoteRes, newsRes] = await Promise.all([
+          fetchYahooQuote(sym),
+          fetchNews(sym + " stock", 6).catch(() => ({ articles: [] })),
+        ]);
 
-      // Step 2: Ask Claude for fundamentals, analysis, news (inject live price if we have it)
-      const priceNote = livePrice ? `The CURRENT real-time price is $${livePrice.toFixed(2)}, change ${liveChange?.toFixed(2)} (${liveChangePct?.toFixed(2)}%). Use this exact price — do NOT substitute your own.` : "Use web search for the current price.";
-      const prompt = `${priceNote}
-Find financial data for stock ticker: ${sym}.
-Return ONLY this JSON (no placeholders):
-{"ticker":"${sym}","company":"full name","exchange":"NYSE/NASDAQ/etc","price":${livePrice ?? "number"},"change":${liveChange ?? "number"},"changePct":${liveChangePct ?? "number"},"volume":"${liveVolume ?? "formatted"}","avgVolume":"formatted","marketCap":"${liveMktCap ?? "formatted"}","pe":number_or_null,"forwardPe":number_or_null,"eps":number,"pb":number_or_null,"evEbitda":number_or_null,"grossMargin":"pct%","operatingMargin":"pct%","netMargin":"pct%","revenue":"TTM formatted","ebitda":"formatted","freeCashFlow":"formatted","debtEquity":number_or_null,"currentRatio":number_or_null,"beta":number_or_null,"week52High":number,"week52Low":number,"dividendYield":"pct% or null","shortInterest":"pct%","analystRating":"BUY/OVERWEIGHT/HOLD/UNDERWEIGHT/SELL","analystCount":number,"priceTarget":number_or_null,"sector":"sector","industry":"industry","analysis":"5 sentence institutional fundamental analysis: business model, moat, recent performance, balance sheet quality, 12-month outlook","catalysts":["c1","c2","c3"],"risks":["r1","r2","r3"],"news":[{"headline":"text","source":"name","date":"date","impact":"BULLISH/BEARISH/NEUTRAL","summary":"1 sentence"}]}`;
-      const txt = await fetchAI(prompt, "You are an institutional financial analyst terminal. Return ONLY valid compact JSON, no markdown, no prose.", 2000);
-      const parsed = parseJSON(txt);
-      if (parsed) {
-        // Override with Yahoo Finance real-time data if available
-        if (livePrice)     parsed.price      = livePrice;
-        if (liveChange)    parsed.change     = liveChange;
-        if (liveChangePct) parsed.changePct  = liveChangePct;
-        if (liveVolume)    parsed.volume     = liveVolume;
-        if (liveMktCap)    parsed.marketCap  = liveMktCap;
-        setData(parsed);
-      } else setErr("Parse error — try again.");
+        const r = quoteRes?.quoteSummary?.result?.[0];
+        if (!r) throw new Error(`No data found for ${sym}`);
+
+        const price   = r.price || {};
+        const summary = r.summaryDetail || {};
+        const stats   = r.defaultKeyStatistics || {};
+        const fin     = r.financialData || {};
+        const profile = r.assetProfile || {};
+        const recTrend= r.recommendationTrend?.trend?.[0] || {};
+
+        // Build rating from recommendation counts
+        const buy = (recTrend.strongBuy||0) + (recTrend.buy||0);
+        const hold= recTrend.hold || 0;
+        const sell= (recTrend.sell||0) + (recTrend.strongSell||0);
+        const total = buy + hold + sell;
+        const rating = total === 0 ? "N/A" : buy/total > 0.6 ? "BUY" : sell/total > 0.4 ? "SELL" : "HOLD";
+
+        // Map news articles
+        const news = (newsRes.articles || []).map(a => ({
+          headline: a.headline,
+          source:   a.source,
+          date:     a.date,
+          impact:   classifyHeadline(a.headline),
+          summary:  a.summary?.slice(0,120) || "",
+        }));
+
+        // Ask Claude ONLY for analysis text + catalysts + risks (cheap: ~400 tokens out)
+        const briefData = `Ticker: ${sym}, Company: ${price.longName||sym}, Sector: ${profile.sector||"N/A"}, Industry: ${profile.industry||"N/A"}, Price: $${price.regularMarketPrice?.toFixed(2)}, Market Cap: ${fmtNum(price.marketCap)}, P/E: ${summary.trailingPE?.toFixed(1)||"N/A"}, Revenue: ${fmtNum(fin.totalRevenue)}, Net Margin: ${fmtPct(fin.profitMargins)}, FCF: ${fmtNum(fin.freeCashflow)}, Debt/Equity: ${fin.debtToEquity?.toFixed(1)||"N/A"}`;
+        const aiPrompt = `Write a 5-sentence institutional analysis for ${sym} (${price.longName||sym}), then list exactly 3 bull catalysts and 3 risk factors. Data: ${briefData}. Return ONLY JSON: {"analysis":"5 sentences","catalysts":["c1","c2","c3"],"risks":["r1","r2","r3"]}`;
+        const aiTxt = await fetchAI(aiPrompt, "Return ONLY valid JSON, no markdown.", 600);
+        const ai = parseJSON(aiTxt) || { analysis: "Analysis unavailable.", catalysts: [], risks: [] };
+
+        setData({
+          ticker:   sym,
+          company:  price.longName || price.shortName || sym,
+          exchange: price.exchangeName || price.fullExchangeName || "N/A",
+          sector:   profile.sector || "N/A",
+          industry: profile.industry || "N/A",
+          price:    price.regularMarketPrice,
+          change:   price.regularMarketChange,
+          changePct:price.regularMarketChangePercent,
+          volume:   fmtVol(price.regularMarketVolume),
+          avgVolume:fmtVol(summary.averageVolume || summary.averageDailyVolume10Day),
+          marketCap:fmtNum(price.marketCap),
+          pe:       summary.trailingPE?.raw ?? summary.trailingPE ?? null,
+          forwardPe:summary.forwardPE?.raw ?? summary.forwardPE ?? null,
+          eps:      stats.trailingEps?.raw ?? stats.trailingEps ?? null,
+          pb:       stats.priceToBook?.raw ?? stats.priceToBook ?? null,
+          evEbitda: stats.enterpriseToEbitda?.raw ?? stats.enterpriseToEbitda ?? null,
+          grossMargin:     fmtPct(fin.grossMargins?.raw ?? fin.grossMargins),
+          operatingMargin: fmtPct(fin.operatingMargins?.raw ?? fin.operatingMargins),
+          netMargin:       fmtPct(fin.profitMargins?.raw ?? fin.profitMargins),
+          revenue:   fmtNum(fin.totalRevenue?.raw ?? fin.totalRevenue),
+          ebitda:    fmtNum(fin.ebitda?.raw ?? fin.ebitda),
+          freeCashFlow: fmtNum(fin.freeCashflow?.raw ?? fin.freeCashflow),
+          debtEquity:   fin.debtToEquity?.raw ?? fin.debtToEquity ?? null,
+          currentRatio: fin.currentRatio?.raw ?? fin.currentRatio ?? null,
+          beta:     summary.beta?.raw ?? summary.beta ?? null,
+          week52High:   summary.fiftyTwoWeekHigh?.raw ?? summary.fiftyTwoWeekHigh ?? null,
+          week52Low:    summary.fiftyTwoWeekLow?.raw ?? summary.fiftyTwoWeekLow ?? null,
+          dividendYield:fmtPct(summary.dividendYield?.raw ?? summary.dividendYield) || "N/A",
+          shortInterest:stats.shortPercentOfFloat ? `${((stats.shortPercentOfFloat?.raw ?? stats.shortPercentOfFloat)*100).toFixed(1)}%` : "N/A",
+          analystRating: rating,
+          analystCount: total,
+          priceTarget:  fin.targetMeanPrice?.raw ?? fin.targetMeanPrice ?? null,
+          analysis: ai.analysis,
+          catalysts: ai.catalysts,
+          risks:     ai.risks,
+          news,
+        });
+      } else {
+        // ── CLAUDE.AI: Full AI web search path
+        const prompt = `Use web search for CURRENT data for ${sym}. Return ONLY JSON: {"ticker":"${sym}","company":"full name","exchange":"exchange","price":number,"change":number,"changePct":number,"volume":"formatted","avgVolume":"formatted","marketCap":"formatted","pe":number_or_null,"forwardPe":number_or_null,"eps":number,"pb":number_or_null,"evEbitda":number_or_null,"grossMargin":"pct%","operatingMargin":"pct%","netMargin":"pct%","revenue":"TTM","ebitda":"formatted","freeCashFlow":"formatted","debtEquity":number_or_null,"currentRatio":number_or_null,"beta":number_or_null,"week52High":number,"week52Low":number,"dividendYield":"pct% or null","shortInterest":"pct%","analystRating":"BUY/HOLD/SELL","analystCount":number,"priceTarget":number_or_null,"sector":"sector","industry":"industry","analysis":"5 sentence analysis","catalysts":["c1","c2","c3"],"risks":["r1","r2","r3"],"news":[{"headline":"text","source":"name","date":"date","impact":"BULLISH/BEARISH/NEUTRAL","summary":"1 sentence"}]}`;
+        const txt = await fetchAI(prompt, "Return ONLY valid compact JSON.", 2000);
+        const parsed = parseJSON(txt);
+        if (parsed) setData(parsed); else setErr("Parse error.");
+      }
     } catch(e) { setErr(e.message); }
     setLoading(false);
   };
@@ -459,13 +545,45 @@ function NEWSPanel() {
     if (!query.trim()) return;
     setLoading(true); setData(null);
     try {
-      const prompt = `Search for the LATEST financial news about: "${query}".
-Return ONLY: {"topic":"${query}","marketImpact":"BULLISH/BEARISH/MIXED/NEUTRAL","execSummary":"2-3 sentence executive brief","tradingTake":"2 sentence actionable trading implication","items":[{"headline":"text","source":"name","date":"date","impact":"BULLISH/BEARISH/NEUTRAL","summary":"2 sentence summary","relevance":"HIGH/MEDIUM/LOW"}]}
-Include 6-8 items sorted by relevance. Return ONLY the JSON.`;
-      const txt = await fetchAI(prompt, "You are a financial intelligence analyst. Return ONLY valid compact JSON, no markdown.", 2000);
-      const parsed = parseJSON(txt);
-      if (parsed) setData(parsed);
-    } catch(e) { console.error(e); }
+      if (IS_LOCAL) {
+        // Fetch real headlines from NewsAPI
+        const newsRes = await fetchNews(query, 8);
+        const articles = newsRes.articles || [];
+        if (articles.length === 0) {
+          setData({ topic: query, marketImpact: "NEUTRAL", execSummary: "No recent news found for this query.", tradingTake: "Insufficient data.", items: [] });
+          setLoading(false); return;
+        }
+        // Use Claude ONLY for exec brief + trading take (cheap: ~150 tokens out)
+        const headlines = articles.map((a,i) => `${i+1}. ${a.headline}`).join("\n");
+        const aiTxt = await fetchAI(
+          `These are real news headlines about "${query}":\n${headlines}\nWrite a 2-sentence executive brief and 1-sentence trading take. Return ONLY JSON: {"execSummary":"2 sentences","tradingTake":"1 sentence","marketImpact":"BULLISH/BEARISH/MIXED/NEUTRAL"}`,
+          "Return ONLY valid JSON.", 200
+        );
+        const ai = parseJSON(aiTxt) || { execSummary: "See headlines below.", tradingTake: "Monitor developments.", marketImpact: "NEUTRAL" };
+        setData({
+          topic: query,
+          marketImpact: ai.marketImpact,
+          execSummary:  ai.execSummary,
+          tradingTake:  ai.tradingTake,
+          items: articles.map(a => ({
+            headline:  a.headline,
+            source:    a.source,
+            date:      a.date,
+            impact:    classifyHeadline(a.headline),
+            summary:   a.summary?.slice(0,160) || "",
+            relevance: "HIGH",
+          })),
+        });
+      } else {
+        const prompt = `Search for latest financial news about: "${query}". Return ONLY JSON: {"topic":"${query}","marketImpact":"BULLISH/BEARISH/MIXED/NEUTRAL","execSummary":"2-3 sentence brief","tradingTake":"2 sentence trading implication","items":[{"headline":"text","source":"name","date":"date","impact":"BULLISH/BEARISH/NEUTRAL","summary":"2 sentence summary"}]} Include 6-8 items.`;
+        const txt = await fetchAI(prompt, "Return ONLY valid compact JSON.", 2000);
+        const parsed = parseJSON(txt);
+        if (parsed) setData(parsed);
+      }
+    } catch(e) {
+      if (e.message.includes("NEWS_API_KEY")) setData({ topic: query, marketImpact: "NEUTRAL", execSummary: "NewsAPI key not configured. Add NEWS_API_KEY to your environment variables (free at newsapi.org/register).", tradingTake: "", items: [] });
+      else console.error(e);
+    }
     setLoading(false);
   };
 
@@ -522,11 +640,36 @@ function MACROPanel() {
   const load = async () => {
     setLoading(true); setData(null);
     try {
-      const prompt = `Search for current real-time global market data today. Return ONLY:
-{"indices":[{"name":"S&P 500","sym":"SPX","value":number,"changePct":number},{"name":"NASDAQ 100","sym":"NDX","value":number,"changePct":number},{"name":"DJIA","sym":"DJIA","value":number,"changePct":number},{"name":"Russell 2000","sym":"RUT","value":number,"changePct":number},{"name":"VIX","sym":"VIX","value":number,"changePct":number}],"rates":[{"label":"Fed Funds Target","val":"X.XX-X.XX%"},{"label":"2Y Treasury","val":"X.XX%","chg":"+Xbps"},{"label":"10Y Treasury","val":"X.XX%","chg":"+Xbps"},{"label":"30Y Treasury","val":"X.XX%"},{"label":"2s10s Spread","val":"Xbps"},{"label":"SOFR","val":"X.XX%"}],"commodities":[{"name":"WTI Crude Oil","price":number,"changePct":number},{"name":"Brent Crude","price":number,"changePct":number},{"name":"Gold Spot","price":number,"changePct":number},{"name":"Silver","price":number,"changePct":number},{"name":"Natural Gas","price":number,"changePct":number},{"name":"Copper","price":number,"changePct":number}],"fx":[{"pair":"DXY Index","rate":number,"changePct":number},{"pair":"EUR/USD","rate":number,"changePct":number},{"pair":"GBP/USD","rate":number,"changePct":number},{"pair":"USD/JPY","rate":number,"changePct":number},{"pair":"USD/CNH","rate":number,"changePct":number}],"macro_env":"3 sentence macro environment assessment"}`;
-      const txt = await fetchAI(prompt, "Return ONLY valid compact JSON, no markdown.", 1500);
-      const parsed = parseJSON(txt);
-      if (parsed) setData(parsed);
+      if (IS_LOCAL) {
+        // Pure live data — Yahoo Finance + FRED. Zero Claude cost.
+        const d = await fetchMacroData();
+        const r = d.rates || {};
+        const fv = v => v != null ? `${parseFloat(v).toFixed(2)}%` : "N/A";
+        const spread = r.spread2s10s != null
+          ? `${parseFloat(r.spread2s10s) > 0 ? "+" : ""}${(parseFloat(r.spread2s10s) * 100).toFixed(0)}bps`
+          : null;
+        setData({
+          indices:     d.indices,
+          commodities: d.commodities,
+          fx:          d.fx,
+          timestamp:   d.timestamp,
+          fredMissing: d.fredMissing,
+          rates: [
+            { label: "Fed Funds Rate",  val: fv(r.fedFunds) },
+            { label: "2Y Treasury",     val: fv(r.t2y)      },
+            { label: "10Y Treasury",    val: fv(r.t10y ?? r.tnx) },
+            { label: "30Y Treasury",    val: fv(r.t30y ?? r.tyx) },
+            { label: "2s10s Spread",    val: spread ?? "N/A" },
+            { label: "SOFR",            val: fv(r.sofr)     },
+          ],
+          macro_env: null,
+        });
+      } else {
+        const prompt = `Search current global market data. Return ONLY JSON: {"indices":[{"name":"S&P 500","sym":"SPX","value":number,"changePct":number},{"name":"NASDAQ 100","sym":"NDX","value":number,"changePct":number},{"name":"DJIA","sym":"DJIA","value":number,"changePct":number},{"name":"Russell 2000","sym":"RUT","value":number,"changePct":number},{"name":"VIX","sym":"VIX","value":number,"changePct":number}],"rates":[{"label":"Fed Funds Rate","val":"X.XX%"},{"label":"2Y Treasury","val":"X.XX%"},{"label":"10Y Treasury","val":"X.XX%"},{"label":"30Y Treasury","val":"X.XX%"},{"label":"2s10s Spread","val":"Xbps"},{"label":"SOFR","val":"X.XX%"}],"commodities":[{"name":"WTI Crude Oil","price":number,"changePct":number},{"name":"Brent Crude","price":number,"changePct":number},{"name":"Gold","price":number,"changePct":number},{"name":"Silver","price":number,"changePct":number},{"name":"Natural Gas","price":number,"changePct":number},{"name":"Copper","price":number,"changePct":number}],"fx":[{"pair":"DXY Index","rate":number,"changePct":number},{"pair":"EUR/USD","rate":number,"changePct":number},{"pair":"GBP/USD","rate":number,"changePct":number},{"pair":"USD/JPY","rate":number,"changePct":number},{"pair":"USD/CNH","rate":number,"changePct":number}],"macro_env":"3 sentence assessment"}`;
+        const txt = await fetchAI(prompt, "Return ONLY valid compact JSON.", 1500);
+        const parsed = parseJSON(txt);
+        if (parsed) setData(parsed);
+      }
     } catch(e) { console.error(e); }
     setLoading(false);
   };
@@ -660,13 +803,48 @@ function DESPanel() {
     setLoading(true); setErr(""); setData(null);
     const sym = input.toUpperCase().trim();
     try {
-      const prompt = `Use web search to find comprehensive company description and background for stock: ${sym}.
-Return ONLY this JSON:
-{"ticker":"${sym}","company":"full legal name","exchange":"exchange","ticker_local":"local ticker","founded":"year","ipo":"year or N/A","headquarters":"City, Country","employees":"number formatted","ceo":"name","website":"url","description":"5-6 sentence comprehensive business description: what they do, how they make money, key products/services, competitive position, main end markets","businessModel":"2 sentence explanation of the core monetization model","moat":"primary competitive advantage — 2 sentences","segments":[{"name":"segment name","revShare":"XX%","description":"1 sentence"}],"geography":[{"region":"region name","revShare":"XX%"}],"customers":"2 sentence description of key customer base and concentration","competitors":["comp1","comp2","comp3","comp4"],"keyMetrics":[{"label":"key metric name","value":"value","context":"1 sentence why it matters"}],"indexMemberships":["S&P 500","DJIA","etc"],"esgRating":"rating or N/A","creditRating":"Moody's/S&P rating or N/A","majorShareholders":[{"name":"institution","pct":"XX%"}],"recentDevelopments":"3 sentence summary of the most significant recent strategic developments, M&A, or business changes in the past 12 months"}`;
-      const txt = await fetchAI(prompt, "You are a financial data terminal. Return ONLY valid compact JSON, no markdown.", 2000);
-      const parsed = parseJSON(txt);
-      if (parsed) setData(parsed);
-      else setErr("Parse error — try again.");
+      if (IS_LOCAL) {
+        const quoteRes = await fetchYahooQuote(sym);
+        const r = quoteRes?.quoteSummary?.result?.[0];
+        if (!r) throw new Error(`No data found for ${sym}`);
+        const profile = r.assetProfile || {};
+        const price   = r.price || {};
+        const stats   = r.defaultKeyStatistics || {};
+        const officers = profile.companyOfficers || [];
+        const ceo = officers.find(o => (o.title||"").toLowerCase().includes("chief executive") || (o.title||"").toLowerCase().includes("ceo"))?.name || "N/A";
+        const emp = profile.fullTimeEmployees ? profile.fullTimeEmployees.toLocaleString() : "N/A";
+        // Claude ONLY for moat + business model narrative (~250 tokens out)
+        const ctx = `${sym} (${price.longName||sym}): ${(profile.longBusinessSummary||"").slice(0,500)} Sector: ${profile.sector}. Industry: ${profile.industry}.`;
+        const aiTxt = await fetchAI(
+          `For ${sym}, write a 2-sentence competitive moat, a 2-sentence business model explanation, and a 2-sentence recent developments summary based on this description: ${ctx}. Return ONLY JSON: {"moat":"2 sentences","businessModel":"2 sentences","recentDevelopments":"2 sentences"}`,
+          "Return ONLY valid JSON.", 300
+        );
+        const ai = parseJSON(aiTxt) || { moat: "See description.", businessModel: "See description.", recentDevelopments: "See description." };
+        setData({
+          ticker: sym, company: price.longName || price.shortName || sym,
+          exchange: price.exchangeName || "N/A", ticker_local: sym,
+          founded: "N/A", ipo: "N/A",
+          headquarters: [profile.city, profile.state, profile.country].filter(Boolean).join(", ") || "N/A",
+          employees: emp, ceo, website: profile.website || "N/A",
+          description: profile.longBusinessSummary || "No description available.",
+          businessModel: ai.businessModel, moat: ai.moat,
+          recentDevelopments: ai.recentDevelopments,
+          segments: [], geography: [], customers: "See business description.", competitors: [],
+          keyMetrics: [
+            { label: "Market Cap",  value: fmtNum(price.marketCap),   context: "Total equity market value" },
+            { label: "Sector",      value: profile.sector  || "N/A",  context: "GICS sector classification" },
+            { label: "Industry",    value: profile.industry|| "N/A",  context: "Industry sub-group" },
+            { label: "Employees",   value: emp,                       context: "Full-time headcount" },
+            { label: "Exchange",    value: price.exchangeName|| "N/A",context: "Listing exchange" },
+          ],
+          indexMemberships: [], esgRating: "N/A", creditRating: "N/A", majorShareholders: [],
+        });
+      } else {
+        const prompt = `Search for company profile for ${sym}. Return ONLY JSON: {"ticker":"${sym}","company":"name","exchange":"exchange","ticker_local":"${sym}","founded":"year","ipo":"year","headquarters":"City, Country","employees":"formatted","ceo":"name","website":"url","description":"5-6 sentences","businessModel":"2 sentences","moat":"2 sentences","segments":[{"name":"name","revShare":"XX%","description":"1 sentence"}],"geography":[{"region":"name","revShare":"XX%"}],"customers":"2 sentences","competitors":["c1","c2","c3"],"keyMetrics":[{"label":"metric","value":"val","context":"context"}],"indexMemberships":[],"esgRating":"N/A","creditRating":"N/A","majorShareholders":[],"recentDevelopments":"3 sentences"}`;
+        const txt = await fetchAI(prompt, "Return ONLY valid compact JSON.", 2000);
+        const parsed = parseJSON(txt);
+        if (parsed) setData(parsed); else setErr("Parse error.");
+      }
     } catch(e) { setErr(e.message); }
     setLoading(false);
   };
@@ -809,12 +987,19 @@ function BIPanel() {
     if (!input.trim()) return;
     setLoading(true); setData(null);
     try {
+      let priceContext = "";
+      if (IS_LOCAL && mode === "stock") {
+        // Inject real price so Claude doesn't fabricate it
+        try {
+          const pd = await fetchLivePrices([input.toUpperCase()]);
+          const d = pd?.details?.[input.toUpperCase()];
+          if (d) priceContext = ` CURRENT PRICE: $${d.price?.toFixed(2)}, change ${d.change?.toFixed(2)} (${d.changePct?.toFixed(2)}%). Use these exact numbers.`;
+        } catch(e) { /* non-fatal */ }
+      }
       const isStock = mode === "stock";
-      const prompt = `You are a Bloomberg Intelligence senior analyst. Use web search to research: "${input}" (mode: ${mode}).
-
-Return ONLY this JSON:
-{"query":"${input}","type":"${mode}","headline":"compelling 1-line research headline","verdict":"OVERWEIGHT/NEUTRAL/UNDERWEIGHT or BULLISH/BEARISH/NEUTRAL","confidence":"HIGH/MEDIUM/LOW","priceTarget":${isStock?"number_or_null":"null"},"currentPrice":${isStock?"number_or_null":"null"},"upside":${isStock?"\"XX%\"":"null"},"summary":"3-4 sentence executive research summary — the single most important insight an institutional investor needs to know","bull_case":"3 sentence bull case with specific catalysts and price levels","bear_case":"3 sentence bear case with specific risk factors and downside scenarios","valuation":"2 sentence valuation assessment — expensive, cheap, or fairly valued relative to peers and history","technicals":"2 sentence technical analysis: trend, key levels, momentum","peerComparison":[{"name":"peer/comp name","rating":"BUY/HOLD/SELL","pt":"$XX or N/A","upside":"XX%"}],"keyThemes":["theme1","theme2","theme3"],"watchlist":[{"trigger":"specific event or data point","direction":"POSITIVE/NEGATIVE","timing":"near/medium/long term"}],"analystNote":"3 sentence note written in first-person institutional analyst voice — what is the highest-conviction call here and why","dataUpdated":"today's date"}`;
-      const txt = await fetchAI(prompt, "You are a Bloomberg Intelligence research analyst. Return ONLY valid compact JSON, no markdown.", 2000);
+      const prompt = `You are a Bloomberg Intelligence senior analyst. Research: "${input}" (mode: ${mode}).${priceContext}
+Return ONLY JSON: {"query":"${input}","type":"${mode}","headline":"1-line research headline","verdict":"OVERWEIGHT/NEUTRAL/UNDERWEIGHT","confidence":"HIGH/MEDIUM/LOW","priceTarget":${isStock?"number_or_null":"null"},"currentPrice":${isStock?"number_or_null":"null"},"upside":${isStock?"\"XX%\"":"null"},"summary":"3-4 sentence executive summary","bull_case":"3 sentence bull case","bear_case":"3 sentence bear case","valuation":"2 sentence valuation assessment","technicals":"2 sentence technical analysis","peerComparison":[{"name":"peer","rating":"BUY/HOLD/SELL","pt":"$XX","upside":"XX%"}],"keyThemes":["t1","t2","t3"],"watchlist":[{"trigger":"event","direction":"POSITIVE/NEGATIVE","timing":"near/medium/long term"}],"analystNote":"3 sentence first-person institutional note","dataUpdated":"${new Date().toISOString().slice(0,10)}"}`;
+      const txt = await fetchAI(prompt, "Return ONLY valid compact JSON, no markdown.", 2000);
       const parsed = parseJSON(txt);
       if (parsed) setData(parsed);
     } catch(e) { console.error(e); }
@@ -950,15 +1135,49 @@ function ECOPanel() {
   const load = async () => {
     setLoading(true); setData(null);
     try {
-      const prompt = `Search for the current economic calendar — upcoming and recent major economic data releases and central bank events for the next 2 weeks, plus the most recent releases from this past week. Today's date context: early March 2026.
-
-Return ONLY:
-{"period":"next 2 weeks","events":[{"date":"YYYY-MM-DD","time":"HH:MM ET","country":"US/EU/UK/JP/CN/etc","event":"full event name","importance":"HIGH/MEDIUM/LOW","previous":"formatted value","forecast":"formatted value or N/A","actual":"formatted value or TBD","surprise":"BEAT/MISS/IN-LINE/TBD","marketImpact":"BULLISH/BEARISH/NEUTRAL/TBD","notes":"1 sentence on what to watch or what it means"}]}
-Include 20-25 events. HIGH importance = Fed decisions, NFP, CPI, GDP, FOMC. MEDIUM = PPI, retail sales, PMI, housing. Return ONLY the JSON.`;
-      const txt = await fetchAI(prompt, "Return ONLY valid compact JSON, no markdown.", 2000);
-      const parsed = parseJSON(txt);
-      if (parsed) setData(parsed);
-    } catch(e) { console.error(e); }
+      if (IS_LOCAL) {
+        const d = await fetchEcoCalendar();
+        if (d.error || d["Error Message"] || d["Information"]) {
+          const msg = d.error || d["Error Message"] || d["Information"] || "API error";
+          setData({ events: [], error: msg.includes("ALPHA_VANTAGE") ? msg : `Alpha Vantage: ${msg.slice(0,120)}` });
+          setLoading(false); return;
+        }
+        // AV returns array of event objects
+        const raw = Array.isArray(d) ? d : (d.data || []);
+        const events = raw.map(e => {
+          const actual = e.actual || "";
+          const est    = e.estimate || e.forecast || "";
+          let surprise = "TBD";
+          if (actual && actual !== "" && est && est !== "") {
+            const a = parseFloat(actual), f = parseFloat(est);
+            if (!isNaN(a) && !isNaN(f)) surprise = a > f ? "BEAT" : a < f ? "MISS" : "IN-LINE";
+          }
+          return {
+            date:        e.date || "",
+            time:        e.time || "—",
+            country:     e.country || "US",
+            event:       e.event || e.name || "",
+            importance:  e.impact === "High" ? "HIGH" : e.impact === "Medium" ? "MEDIUM" : "LOW",
+            previous:    e.previous || "—",
+            forecast:    est || "N/A",
+            actual:      actual || "TBD",
+            surprise,
+            marketImpact:"TBD",
+            notes:       "",
+          };
+        });
+        setData({ events: events.slice(0, 35) });
+      } else {
+        const prompt = `Search for the economic calendar for the next 2 weeks. Return ONLY JSON: {"period":"next 2 weeks","events":[{"date":"YYYY-MM-DD","time":"HH:MM ET","country":"US/EU/UK/JP/CN","event":"name","importance":"HIGH/MEDIUM/LOW","previous":"value","forecast":"value","actual":"value or TBD","surprise":"BEAT/MISS/IN-LINE/TBD","marketImpact":"BULLISH/BEARISH/NEUTRAL/TBD","notes":"1 sentence"}]} 20-25 events. HIGH=Fed,NFP,CPI,GDP.`;
+        const txt = await fetchAI(prompt, "Return ONLY valid compact JSON.", 2000);
+        const parsed = parseJSON(txt);
+        if (parsed) setData(parsed);
+      }
+    } catch(e) {
+      setData({ events: [], error: e.message.includes("ALPHA_VANTAGE_KEY")
+        ? "Set ALPHA_VANTAGE_KEY env var. Free key at alphavantage.co/support/#api-key"
+        : e.message });
+    }
     setLoading(false);
   };
 
@@ -1029,19 +1248,101 @@ function FSPanel() {
     setLoading(true); setData(null);
     const sym = input.toUpperCase().trim();
     try {
-      const prompt = `Use web search to find comprehensive financial statement data for: ${sym}. Get the most recent annual figures AND last 3 years for trend.
+      if (IS_LOCAL) {
+        const [finRes, quoteRes] = await Promise.all([
+          fetchYahooFinancials(sym),
+          fetchYahooQuote(sym),
+        ]);
+        const fin     = finRes?.quoteSummary?.result?.[0] || {};
+        const q       = quoteRes?.quoteSummary?.result?.[0] || {};
+        const finData = q.financialData || {};
+        const stats   = q.defaultKeyStatistics || {};
+        const summ    = q.summaryDetail || {};
+        const price   = q.price || {};
 
-Return ONLY this JSON with real numbers (in millions USD unless noted):
-{"ticker":"${sym}","company":"name","currency":"USD","period":"TTM/FY2024","reportDate":"date",
-"incomeStatement":{"periods":["FY2022","FY2023","FY2024","TTM"],"revenue":[num,num,num,num],"grossProfit":[num,num,num,num],"ebitda":[num,num,num,num],"ebit":[num,num,num,num],"netIncome":[num,num,num,num],"eps":[num,num,num,num],"grossMargin":["XX%","XX%","XX%","XX%"],"ebitdaMargin":["XX%","XX%","XX%","XX%"],"netMargin":["XX%","XX%","XX%","XX%"],"revenueGrowth":["N/A","XX%","XX%","XX%"]},
-"balanceSheet":{"cash":num,"shortTermInvestments":num,"totalCurrentAssets":num,"totalAssets":num,"shortTermDebt":num,"longTermDebt":num,"totalDebt":num,"totalLiabilities":num,"shareholdersEquity":num,"bookValuePerShare":num,"netDebt":num},
-"cashFlow":{"operatingCF":num,"capex":num,"freeCashFlow":num,"dividendsPaid":num,"shareRepurchases":num,"periods":["FY2022","FY2023","FY2024"],"fcfHistory":[num,num,num]},
-"keyRatios":{"pe":num_or_null,"forwardPe":num_or_null,"pb":num_or_null,"evEbitda":num_or_null,"evRevenue":num_or_null,"debtEbitda":num_or_null,"interestCoverage":num_or_null,"currentRatio":num_or_null,"quickRatio":num_or_null,"roe":"XX%","roa":"XX%","roic":"XX%","fcfYield":"XX%","dividendYield":"XX% or null"},
-"guidance":{"revenue":"management guidance range or N/A","eps":"management guidance or N/A","notes":"1 sentence on guidance or lack thereof"},
-"qualityScore":{"assessment":"STRONG/ADEQUATE/WEAK","earningsQuality":"2 sentence assessment of earnings quality: accruals, non-recurring items, cash conversion","balanceSheetStrength":"2 sentence assessment of balance sheet health and leverage"}}`;
-      const txt = await fetchAI(prompt, "You are a financial data terminal. Return ONLY valid compact JSON, no markdown.", 2000);
-      const parsed = parseJSON(txt);
-      if (parsed) setData(parsed);
+        const IS = fin.incomeStatementHistory?.incomeStatementHistory || [];
+        const BS = fin.balanceSheetHistory?.balanceSheetStatements || [];
+        const CF = fin.cashflowStatementHistory?.cashflowStatements || [];
+
+        const rv  = (obj, key) => { const v = obj?.[key]; return v?.raw ?? v ?? null; };
+        const pct = v => v != null ? `${(v * 100).toFixed(1)}%` : "N/A";
+
+        // Build period labels from statement dates
+        const periods = IS.slice(0,4).reverse().map(s => {
+          const ts = rv(s, "endDate"); if (!ts) return "N/A";
+          return `FY${new Date(ts * 1000).getFullYear()}`;
+        });
+        const arr = (stmts, key) => stmts.slice(0,4).reverse().map(s => rv(s, key));
+
+        const revArr = arr(IS, "totalRevenue");
+        const gpArr  = arr(IS, "grossProfit");
+        const niArr  = arr(IS, "netIncome");
+        const epsArr = arr(IS, "dilutedEPS");
+        const bsLast = BS[0] || {};
+        const cfLast = CF[0] || {};
+        const totalDebt = (rv(bsLast,"longTermDebt")||0) + (rv(bsLast,"shortLongTermDebt")||rv(bsLast,"shortBorrowings")||0);
+        const cash      = rv(bsLast,"cash") || 0;
+        const netDebt   = totalDebt - cash;
+
+        // Claude: quality assessment only — 2 sentences each, ~250 tokens out
+        const ctx = `${sym} revenue trend: ${revArr.map(v => fmtNum(v)).join("→")}, net income: ${niArr.map(v => fmtNum(v)).join("→")}, FCF: ${fmtNum(rv(cfLast,"freeCashflow"))}, total debt: ${fmtNum(totalDebt)}, equity: ${fmtNum(rv(bsLast,"totalStockholderEquity"))}`;
+        const aiTxt = await fetchAI(
+          `Assess financial quality for ${sym}. Data: ${ctx}. Return ONLY JSON: {"earningsQuality":"2 sentences on cash conversion and accruals","balanceSheetStrength":"2 sentences on leverage and liquidity","assessment":"STRONG/ADEQUATE/WEAK"}`,
+          "Return ONLY valid JSON.", 300
+        );
+        const qa = parseJSON(aiTxt) || { earningsQuality: "See data.", balanceSheetStrength: "See data.", assessment: "ADEQUATE" };
+
+        setData({
+          ticker: sym, company: price.longName || sym, currency: "USD",
+          period: periods[periods.length-1] || "Latest", reportDate: "Latest available",
+          incomeStatement: {
+            periods: periods.length ? periods : ["FY2021","FY2022","FY2023","FY2024"],
+            revenue:      revArr,
+            grossProfit:  gpArr,
+            ebitda:       arr(IS, "ebitda"),
+            ebit:         arr(IS, "ebit"),
+            netIncome:    niArr,
+            eps:          epsArr,
+            grossMargin:  gpArr.map((gp,i) => revArr[i] ? pct(gp/revArr[i]) : "N/A"),
+            ebitdaMargin: arr(IS,"ebitda").map((e,i) => revArr[i] ? pct(e/revArr[i]) : "N/A"),
+            netMargin:    niArr.map((ni,i) => revArr[i] ? pct(ni/revArr[i]) : "N/A"),
+            revenueGrowth:revArr.map((v,i) => (!i || !revArr[i-1]) ? "N/A" : `${(((v/revArr[i-1])-1)*100).toFixed(1)}%`),
+          },
+          balanceSheet: {
+            cash, totalCurrentAssets: rv(bsLast,"totalCurrentAssets"),
+            totalAssets: rv(bsLast,"totalAssets"),
+            shortTermDebt: rv(bsLast,"shortLongTermDebt") || rv(bsLast,"shortBorrowings"),
+            longTermDebt: rv(bsLast,"longTermDebt"), totalDebt, netDebt,
+            totalLiabilities: rv(bsLast,"totalLiab"),
+            shareholdersEquity: rv(bsLast,"totalStockholderEquity"),
+            bookValuePerShare: rv(stats,"bookValue"),
+          },
+          cashFlow: {
+            operatingCF:      rv(cfLast,"totalCashFromOperatingActivities"),
+            capex:            rv(cfLast,"capitalExpenditures"),
+            freeCashFlow:     rv(cfLast,"freeCashflow") || rv(finData,"freeCashflow"),
+            dividendsPaid:    rv(cfLast,"dividendsPaid"),
+            shareRepurchases: rv(cfLast,"repurchaseOfStock"),
+            periods: CF.slice(0,3).reverse().map(s => { const ts=rv(s,"endDate"); return ts?`FY${new Date(ts*1000).getFullYear()}`:"N/A"; }),
+            fcfHistory: CF.slice(0,3).reverse().map(s => rv(s,"freeCashflow")),
+          },
+          keyRatios: {
+            pe:           rv(summ,"trailingPE"),       forwardPe:   rv(summ,"forwardPE"),
+            pb:           rv(stats,"priceToBook"),     evEbitda:    rv(stats,"enterpriseToEbitda"),
+            evRevenue:    rv(stats,"enterpriseToRevenue"), debtEbitda: null,
+            currentRatio: rv(finData,"currentRatio"),  quickRatio: rv(finData,"quickRatio"),
+            roe: pct(rv(finData,"returnOnEquity")),     roa: pct(rv(finData,"returnOnAssets")),
+            roic: "N/A", fcfYield: "N/A", dividendYield: pct(rv(summ,"dividendYield")) || "N/A",
+          },
+          guidance: { revenue: "N/A", eps: "N/A", notes: "See latest earnings release." },
+          qualityScore: qa,
+        });
+      } else {
+        const prompt = `Find financial statements for ${sym} with 3-year trend. Return ONLY JSON: {"ticker":"${sym}","company":"name","currency":"USD","period":"FY2024","reportDate":"date","incomeStatement":{"periods":["FY2022","FY2023","FY2024","TTM"],"revenue":[n,n,n,n],"grossProfit":[n,n,n,n],"ebitda":[n,n,n,n],"ebit":[n,n,n,n],"netIncome":[n,n,n,n],"eps":[n,n,n,n],"grossMargin":["XX%","XX%","XX%","XX%"],"ebitdaMargin":["XX%","XX%","XX%","XX%"],"netMargin":["XX%","XX%","XX%","XX%"],"revenueGrowth":["N/A","XX%","XX%","XX%"]},"balanceSheet":{"cash":n,"shortTermInvestments":n,"totalCurrentAssets":n,"totalAssets":n,"shortTermDebt":n,"longTermDebt":n,"totalDebt":n,"totalLiabilities":n,"shareholdersEquity":n,"bookValuePerShare":n,"netDebt":n},"cashFlow":{"operatingCF":n,"capex":n,"freeCashFlow":n,"dividendsPaid":n,"shareRepurchases":n,"periods":["FY2022","FY2023","FY2024"],"fcfHistory":[n,n,n]},"keyRatios":{"pe":n,"forwardPe":n,"pb":n,"evEbitda":n,"evRevenue":n,"debtEbitda":n,"currentRatio":n,"quickRatio":n,"roe":"XX%","roa":"XX%","roic":"XX%","fcfYield":"XX%","dividendYield":"XX%"},"guidance":{"revenue":"N/A","eps":"N/A","notes":"1 sentence"},"qualityScore":{"assessment":"STRONG/ADEQUATE/WEAK","earningsQuality":"2 sentences","balanceSheetStrength":"2 sentences"}}`;
+        const txt = await fetchAI(prompt, "Return ONLY valid compact JSON.", 2000);
+        const parsed = parseJSON(txt);
+        if (parsed) setData(parsed);
+      }
     } catch(e) { console.error(e); }
     setLoading(false);
   };
@@ -1230,16 +1531,25 @@ function WEIPanel() {
   const load = async () => {
     setLoading(true); setData(null);
     try {
-      const prompt = `Search for current real-time global equity market data today. Return ONLY:
-{"lastUpdated":"datetime","regions":[
-  {"region":"NORTH AMERICA","indices":[{"name":"S&P 500","ticker":"SPX","country":"US","value":number,"changePct":number,"ytd":"XX%","weekChange":"XX%"},{"name":"NASDAQ 100","ticker":"NDX","country":"US","value":number,"changePct":number,"ytd":"XX%","weekChange":"XX%"},{"name":"DJIA","ticker":"DJIA","country":"US","value":number,"changePct":number,"ytd":"XX%","weekChange":"XX%"},{"name":"Russell 2000","ticker":"RUT","country":"US","value":number,"changePct":number,"ytd":"XX%","weekChange":"XX%"},{"name":"TSX Composite","ticker":"TSX","country":"CA","value":number,"changePct":number,"ytd":"XX%","weekChange":"XX%"}]},
-  {"region":"EUROPE","indices":[{"name":"Euro Stoxx 50","ticker":"SX5E","country":"EU","value":number,"changePct":number,"ytd":"XX%","weekChange":"XX%"},{"name":"FTSE 100","ticker":"UKX","country":"UK","value":number,"changePct":number,"ytd":"XX%","weekChange":"XX%"},{"name":"DAX","ticker":"DAX","country":"DE","value":number,"changePct":number,"ytd":"XX%","weekChange":"XX%"},{"name":"CAC 40","ticker":"CAC","country":"FR","value":number,"changePct":number,"ytd":"XX%","weekChange":"XX%"},{"name":"IBEX 35","ticker":"IBEX","country":"ES","value":number,"changePct":number,"ytd":"XX%","weekChange":"XX%"}]},
-  {"region":"ASIA PACIFIC","indices":[{"name":"Nikkei 225","ticker":"NKY","country":"JP","value":number,"changePct":number,"ytd":"XX%","weekChange":"XX%"},{"name":"Hang Seng","ticker":"HSI","country":"HK","value":number,"changePct":number,"ytd":"XX%","weekChange":"XX%"},{"name":"CSI 300","ticker":"SHSZ300","country":"CN","value":number,"changePct":number,"ytd":"XX%","weekChange":"XX%"},{"name":"ASX 200","ticker":"ASX","country":"AU","value":number,"changePct":number,"ytd":"XX%","weekChange":"XX%"},{"name":"KOSPI","ticker":"KOSPI","country":"KR","value":number,"changePct":number,"ytd":"XX%","weekChange":"XX%"}]},
-  {"region":"EMERGING MARKETS","indices":[{"name":"MSCI EM","ticker":"MXEF","country":"EM","value":number,"changePct":number,"ytd":"XX%","weekChange":"XX%"},{"name":"Bovespa","ticker":"IBOV","country":"BR","value":number,"changePct":number,"ytd":"XX%","weekChange":"XX%"},{"name":"Nifty 50","ticker":"NIFTY","country":"IN","value":number,"changePct":number,"ytd":"XX%","weekChange":"XX%"},{"name":"Sensex","ticker":"SENSEX","country":"IN","value":number,"changePct":number,"ytd":"XX%","weekChange":"XX%"}]}
-],"sectorPerformance":[{"sector":"Technology","changePct":number,"ytd":"XX%"},{"sector":"Energy","changePct":number,"ytd":"XX%"},{"sector":"Financials","changePct":number,"ytd":"XX%"},{"sector":"Healthcare","changePct":number,"ytd":"XX%"},{"sector":"Industrials","changePct":number,"ytd":"XX%"},{"sector":"Consumer Disc","changePct":number,"ytd":"XX%"},{"sector":"Consumer Staples","changePct":number,"ytd":"XX%"},{"sector":"Utilities","changePct":number,"ytd":"XX%"},{"sector":"Materials","changePct":number,"ytd":"XX%"},{"sector":"Real Estate","changePct":number,"ytd":"XX%"},{"sector":"Communication","changePct":number,"ytd":"XX%"}],"marketNarrative":"3 sentence global markets narrative — what is driving sentiment today and which regions/themes are outperforming"}`;
-      const txt = await fetchAI(prompt, "Return ONLY valid compact JSON, no markdown.", 2000);
-      const parsed = parseJSON(txt);
-      if (parsed) setData(parsed);
+      if (IS_LOCAL) {
+        // Pure Yahoo Finance — zero Claude cost
+        const [indRes, secRes] = await Promise.all([
+          fetchWorldIndices(),
+          fetchLivePrices(["XLK","XLE","XLF","XLV","XLI","XLY","XLP","XLU","XLB","XLRE","XLC"]).catch(() => ({ details: {} })),
+        ]);
+        const secNames = { XLK:"Technology",XLE:"Energy",XLF:"Financials",XLV:"Healthcare",
+          XLI:"Industrials",XLY:"Consumer Disc",XLP:"Consumer Staples",
+          XLU:"Utilities",XLB:"Materials",XLRE:"Real Estate",XLC:"Communication" };
+        const sectorPerformance = Object.keys(secNames).map(s => ({
+          sector: secNames[s], changePct: secRes.details?.[s]?.changePct ?? 0, ytd: "N/A",
+        }));
+        setData({ ...indRes, sectorPerformance, marketNarrative: null, lastUpdated: indRes.timestamp });
+      } else {
+        const prompt = `Search current global equity market data. Return ONLY JSON: {"lastUpdated":"datetime","regions":[{"region":"NORTH AMERICA","indices":[{"name":"S&P 500","ticker":"SPX","country":"US","value":number,"changePct":number,"ytd":"XX%","weekChange":"XX%"},{"name":"NASDAQ 100","ticker":"NDX","country":"US","value":number,"changePct":number,"ytd":"XX%","weekChange":"XX%"},{"name":"DJIA","ticker":"DJIA","country":"US","value":number,"changePct":number,"ytd":"XX%","weekChange":"XX%"},{"name":"Russell 2000","ticker":"RUT","country":"US","value":number,"changePct":number,"ytd":"XX%","weekChange":"XX%"},{"name":"TSX Composite","ticker":"TSX","country":"CA","value":number,"changePct":number,"ytd":"XX%","weekChange":"XX%"}]},{"region":"EUROPE","indices":[{"name":"Euro Stoxx 50","ticker":"SX5E","country":"EU","value":number,"changePct":number,"ytd":"XX%"},{"name":"FTSE 100","ticker":"UKX","country":"UK","value":number,"changePct":number,"ytd":"XX%"},{"name":"DAX","ticker":"DAX","country":"DE","value":number,"changePct":number,"ytd":"XX%"},{"name":"CAC 40","ticker":"CAC","country":"FR","value":number,"changePct":number,"ytd":"XX%"}]},{"region":"ASIA PACIFIC","indices":[{"name":"Nikkei 225","ticker":"NKY","country":"JP","value":number,"changePct":number,"ytd":"XX%"},{"name":"Hang Seng","ticker":"HSI","country":"HK","value":number,"changePct":number,"ytd":"XX%"},{"name":"CSI 300","ticker":"SHSZ300","country":"CN","value":number,"changePct":number,"ytd":"XX%"}]},{"region":"EMERGING MARKETS","indices":[{"name":"MSCI EM","ticker":"MXEF","country":"EM","value":number,"changePct":number,"ytd":"XX%"},{"name":"Bovespa","ticker":"IBOV","country":"BR","value":number,"changePct":number,"ytd":"XX%"}]}],"sectorPerformance":[{"sector":"Technology","changePct":number,"ytd":"XX%"},{"sector":"Energy","changePct":number,"ytd":"XX%"},{"sector":"Financials","changePct":number,"ytd":"XX%"},{"sector":"Healthcare","changePct":number,"ytd":"XX%"},{"sector":"Industrials","changePct":number,"ytd":"XX%"},{"sector":"Consumer Disc","changePct":number,"ytd":"XX%"},{"sector":"Utilities","changePct":number,"ytd":"XX%"},{"sector":"Materials","changePct":number,"ytd":"XX%"},{"sector":"Communication","changePct":number,"ytd":"XX%"}],"marketNarrative":"3 sentence global narrative"}`;
+        const txt = await fetchAI(prompt, "Return ONLY valid compact JSON.", 2000);
+        const parsed = parseJSON(txt);
+        if (parsed) setData(parsed);
+      }
     } catch(e) { console.error(e); }
     setLoading(false);
   };
