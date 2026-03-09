@@ -913,66 +913,382 @@ function MACROPanel() {
   );
 }
 
-// ─── F5: LEARN — FINANCE ACADEMY ────────────────────────────────────────────
+// ─── F5: LEARN — FINANCE ACADEMY ─────────────────────────────────────────────
+// Curriculum data — the full topic library
+const CURRICULUM = [
+  {
+    cat: "EQUITY ANALYSIS", color: C.cyan, icon: "▣", topics: [
+      { title: "DCF Valuation: WACC, Terminal Value & Sensitivity Tables", level: "INT" },
+      { title: "EV/EBITDA vs P/E: When Each Multiple Lies to You", level: "INT" },
+      { title: "Comparable Company Analysis: Selecting & Scrubbing the Right Comps", level: "INT" },
+      { title: "P/B & ROE: The Bank Stock Valuation Framework", level: "ADV" },
+      { title: "Free Cash Flow: The Gap Between Accounting Earnings and Reality", level: "INT" },
+      { title: "Reading a 10-K Like a Hedge Fund Analyst", level: "INT" },
+      { title: "Short Interest Mechanics & Squeeze Dynamics: The GameStop Autopsy", level: "ADV" },
+      { title: "Earnings Quality: How to Detect Aggressive Accounting", level: "ADV" },
+    ]
+  },
+  {
+    cat: "DERIVATIVES", color: C.purple, icon: "◈", topics: [
+      { title: "Options Greeks: Delta, Gamma, Vega, Theta — Mechanics Not Definitions", level: "ADV" },
+      { title: "Delta Hedging: The Dynamic Replication Argument", level: "ADV" },
+      { title: "Volatility Surface: Skew, Term Structure & What It Tells You", level: "ADV" },
+      { title: "Black-Scholes: Derivation, Assumptions & Where It Breaks", level: "ADV" },
+      { title: "Exotic Options: Barriers, Digitals, Asian Options", level: "EXP" },
+      { title: "Interest Rate Swaps: Pricing, Risk & the OIS Discount Framework", level: "ADV" },
+      { title: "Credit Default Swaps: Mechanics, Basis & CDS-Bond Basis Trades", level: "ADV" },
+      { title: "Structured Products: Auto-Callables, Reverse Convertibles & Equity-Linked Notes", level: "EXP" },
+    ]
+  },
+  {
+    cat: "FIXED INCOME & RATES", color: C.amber, icon: "≋", topics: [
+      { title: "Bond Math: Duration, Convexity & Why They Matter in a Rising Rate Regime", level: "INT" },
+      { title: "Yield Curve: Construction, Shapes & Inversion as a Recession Signal", level: "INT" },
+      { title: "SOFR Transition: What Actually Changed and the Residual LIBOR Risk", level: "ADV" },
+      { title: "Bootstrapping a Discount Curve from Swap Market Data", level: "ADV" },
+      { title: "Credit Spreads: Investment Grade vs High Yield Spread Dynamics", level: "INT" },
+      { title: "Inflation Derivatives: TIPS, Breakevens & CPI Swaps", level: "ADV" },
+      { title: "Repo Markets: The Plumbing of Fixed Income Financing", level: "ADV" },
+      { title: "Fed Policy Transmission: How Rate Changes Propagate Through Markets", level: "INT" },
+    ]
+  },
+  {
+    cat: "MACRO & MARKETS", color: C.teal, icon: "◎", topics: [
+      { title: "Oil Markets: WTI vs Brent, Futures Curve Structure & Geopolitical Premium", level: "INT" },
+      { title: "FX: Carry Trade Mechanics, Purchasing Power Parity & Intervention Risk", level: "INT" },
+      { title: "Gold as a Macro Asset: Real Rates, Dollar Correlation & Safe Haven Flows", level: "INT" },
+      { title: "Strait of Hormuz Risk: Energy Chokepoints & Historical Market Impact", level: "INT" },
+      { title: "Defense Sector Dynamics: Backlog, LRIP Contracts & Geopolitical Catalysts", level: "INT" },
+      { title: "Tanker Markets: VLCC Rate Dynamics, Ton-Mile Demand & Sanctions Arbitrage", level: "ADV" },
+      { title: "Commodity Supercycles: Drivers, Historical Precedents & Signal Indicators", level: "INT" },
+      { title: "Recession Indicators: The Full Dashboard Beyond the Yield Curve", level: "INT" },
+    ]
+  },
+  {
+    cat: "TRADING & MICROSTRUCTURE", color: C.green, icon: "⬡", topics: [
+      { title: "Market Microstructure: Bid-Ask Spread Decomposition & Price Discovery", level: "ADV" },
+      { title: "Options Market Making: Inventory Risk, Delta Hedging & Edge", level: "EXP" },
+      { title: "Factor Investing: Value, Momentum, Quality, Low-Vol — Live vs Paper", level: "INT" },
+      { title: "Order Flow: How Institutional Block Trades Move Markets", level: "ADV" },
+      { title: "Statistical Arbitrage: Pairs Trading, Cointegration & Mean Reversion", level: "EXP" },
+      { title: "VWAP & TWAP: Execution Algorithms and Implementation Shortfall", level: "INT" },
+      { title: "High-Frequency Trading: Infrastructure, Strategies & Market Impact", level: "ADV" },
+      { title: "Short Selling: Locates, Hard-to-Borrow Costs & Stock Loan Dynamics", level: "ADV" },
+    ]
+  },
+  {
+    cat: "PORTFOLIO & RISK", color: C.red, icon: "◉", topics: [
+      { title: "Modern Portfolio Theory: Efficient Frontier, Sharpe Ratio & Its Failures", level: "INT" },
+      { title: "Value at Risk: Historical, Parametric & Monte Carlo — and Why VaR Lies", level: "ADV" },
+      { title: "Risk Factor Models: Barra, Fama-French & Alpha Decomposition", level: "ADV" },
+      { title: "Portfolio Construction: Position Sizing, Kelly Criterion & Concentration Risk", level: "ADV" },
+      { title: "Stress Testing & Scenario Analysis: The Right Way to Think About Tail Risk", level: "ADV" },
+      { title: "Correlation & Contagion: Why Diversification Fails in Crises", level: "ADV" },
+      { title: "Hedge Fund Structures: L/S Equity, Global Macro, Multi-Strat & Fee Dynamics", level: "INT" },
+      { title: "Prime Brokerage: Margin, Leverage, Rehypothecation & Counterparty Risk", level: "ADV" },
+    ]
+  },
+  {
+    cat: "TECHNICAL ANALYSIS", color: "#FF6B35", icon: "◬", topics: [
+      { title: "Price Action & Chart Patterns: What Actually Has Predictive Power", level: "INT" },
+      { title: "RSI: Calculation, Divergences & Failure Swings in Trending Markets", level: "INT" },
+      { title: "MACD: Signal Line Crossovers, Histograms & Momentum Confirmation", level: "INT" },
+      { title: "Bollinger Bands: Volatility-Based Entries, Squeezes & Band Walks", level: "INT" },
+      { title: "Volume Analysis: OBV, VWAP & Institutional Accumulation/Distribution", level: "INT" },
+      { title: "Support/Resistance: Why Levels Work and When They Fail", level: "INT" },
+      { title: "Elliott Wave & Fibonacci: The Case For and Against", level: "INT" },
+      { title: "Options-Implied Technicals: Max Pain, Gamma Walls & Dealer Hedging Flows", level: "ADV" },
+    ]
+  },
+  {
+    cat: "OPERATIONS & INFRASTRUCTURE", color: "#9E9E9E", icon: "⬛", topics: [
+      { title: "Trade Lifecycle: Execution to Settlement — Every Step and Where It Breaks", level: "INT" },
+      { title: "OTC Derivatives Operations: Confirms, Reconciliation & ISDA Framework", level: "ADV" },
+      { title: "Central Clearing: CCPs, Initial Margin & the Post-Crisis Plumbing", level: "ADV" },
+      { title: "Prime Brokerage Operations: Margin Calls, Short Locates & Client Reporting", level: "INT" },
+      { title: "Structured Note Operations: CUSIP Lifecycle, Autocall Events & Cash Flows", level: "ADV" },
+      { title: "Middle Office vs Front Office: Data Flows, P&L Attribution & Dispute Management", level: "INT" },
+      { title: "Regulatory Landscape: Dodd-Frank, EMIR, SFTR & Trade Reporting", level: "INT" },
+      { title: "Technology Stack: Trade Capture Systems, Risk Engines & Data Architecture", level: "ADV" },
+    ]
+  },
+];
+
+const LEVEL_COLOR = { INT: C.green, ADV: C.amber, EXP: C.red };
+const LEVEL_LABEL = { INT: "INTERMEDIATE", ADV: "ADVANCED", EXP: "EXPERT" };
+
+// Section type rendering config
+const SECTION_STYLES = {
+  concept:     { border: C.cyan,   label: "CONCEPT",           bg: "#001A1A" },
+  formula:     { border: C.purple, label: "THE MATH",          bg: "#0D0018" },
+  example:     { border: C.amber,  label: "REAL WORLD",        bg: "#0A0800" },
+  institutional:{ border: C.teal,  label: "HOW THE STREET USES THIS", bg: "#001510" },
+  pitfalls:    { border: C.red,    label: "WHERE PEOPLE GO WRONG", bg: "#0F0004" },
+  advanced:    { border: "#FF6B35",label: "GOING DEEPER",      bg: "#0A0500" },
+};
+
 function LEARNPanel() {
-  const [input, setInput] = useState("");
-  const [question, setQuestion] = useState("");
-  const [answer, setAnswer] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [view, setView]         = useState("browse"); // "browse" | "lecture" | "search"
+  const [input, setInput]       = useState("");
+  const [lecture, setLecture]   = useState(null);
+  const [loading, setLoading]   = useState(false);
+  const [loadingMsg, setLoadingMsg] = useState("");
+  const [activeCat, setActiveCat] = useState(null);
+  const [history, setHistory]   = useState(() => loadFromStorage("bbg_learn_history", []));
+  const [err, setErr]           = useState("");
 
-  const ask = async (q) => {
-    const query = q || input;
-    if (!query.trim()) return;
-    setLoading(true); setAnswer(""); setQuestion(query);
+  useEffect(() => { saveToStorage("bbg_learn_history", history.slice(0, 20)); }, [history]);
+
+  const requestLecture = async (topic, isSearch = false) => {
+    setLoading(true); setErr(""); setLecture(null);
+    setView("lecture");
+    const msgs = [
+      "LOADING CURRICULUM...",
+      `PREPARING: ${topic.toUpperCase().slice(0, 45)}...`,
+      "STRUCTURING LECTURE...",
+      "ADDING MARKET EXAMPLES...",
+    ];
+    let mi = 0;
+    setLoadingMsg(msgs[0]);
+    const interval = setInterval(() => { mi = (mi + 1) % msgs.length; setLoadingMsg(msgs[mi]); }, 1800);
+
     try {
-      const sys = `You are a world-class finance professor teaching a highly intelligent VP-level derivatives & structured products professional (8+ years across Citi, Morgan Stanley, BBH) who is transitioning toward trading-adjacent and front-office work.
+      const sys = `You are a world-class finance professor at a top-tier institution. Your student is a VP-level derivatives & structured products professional (8+ years at Citi, Morgan Stanley, BBH) who is transitioning toward front-office and trading-adjacent roles. They have deep operational knowledge but want to build the theoretical and market-intuition depth of a trader or PM.
 
-Teaching style:
-- Skip Wikipedia-level definitions. Assume deep foundational knowledge.
-- Go deep into mechanics, edge cases, and the "why" behind the math
-- Use real market examples with real numbers and current market context
-- Show the math and formulas; don't shy away from quantitative depth
-- Explain the institutional perspective — how a hedge fund PM, prop desk trader, or sell-side analyst actually uses this
-- Connect to adjacent concepts: derivatives, rates, structured products, macro
-- End with 2-3 specific "next topics to explore" to continue the learning path
-- Use clear ALL-CAPS section headers and numbered sub-points for structure`;
-      const txt = await fetchAI(`Deep teach me about: "${query}". Use web search for current market data or recent real-world examples that strengthen the explanation.`, sys, 2000);
-      setAnswer(txt);
-    } catch(e) { setAnswer(`Error: ${e.message}`); }
+CRITICAL TEACHING RULES:
+- Never define basic terms. Jump straight to the mechanism, the math, and the edge cases.
+- Every claim must be grounded in real numbers, real market events, or a real institutional context.
+- Show the math. Don't hand-wave formulas — derive or explain them step by step.
+- Institutional perspective first: how does a prop trader, PM, or sell-side desk actually use this?
+- Be opinionated. If something is overused, underrated, or commonly misunderstood on the Street, say so.
+- Connect to adjacent concepts always.
+- Keep sections tight but deep — quality over quantity.
+
+RETURN ONLY VALID JSON matching this exact schema:
+{
+  "title": "exact topic title",
+  "subtitle": "one-line institutional framing of why this matters",
+  "level": "INTERMEDIATE|ADVANCED|EXPERT",
+  "readTime": "X min",
+  "sections": [
+    {
+      "type": "concept|formula|example|institutional|pitfalls|advanced",
+      "title": "SECTION TITLE IN CAPS",
+      "content": "full content — use \n for line breaks, use actual math notation"
+    }
+  ],
+  "keyTakeaways": ["3-4 bullet-point takeaways, each one sentence, highly specific"],
+  "relatedTopics": ["3 related topics to explore next, phrased as search queries"],
+  "prereqs": ["2-3 topics they should know first, if any"]
+}`;
+
+      const prompt = `Write a full institutional-depth lecture on: "${topic}".
+Include sections in this order: concept (core mechanism), formula (math/quantitative framework), example (real market event with actual numbers), institutional (how traders/PMs/desks actually apply this), pitfalls (what trips people up), advanced (one deeper rabbit hole worth knowing).
+Make it genuinely teach something a VP with 8 years in derivatives would not already know from basic training.`;
+
+      const txt = await fetchAI(prompt, sys, 2500);
+      const parsed = parseJSON(txt);
+
+      if (parsed?.sections) {
+        setLecture(parsed);
+        setHistory(prev => {
+          const next = [{ topic, title: parsed.title, ts: new Date().toLocaleString() }, ...prev.filter(h => h.topic !== topic)];
+          return next.slice(0, 20);
+        });
+      } else {
+        setErr("Lecture parse error — try again.");
+        setView("browse");
+      }
+    } catch(e) { setErr(e.message); setView("browse"); }
+    clearInterval(interval);
     setLoading(false);
   };
 
-  const topics = [
-    { cat:"VALUATION", color:C.cyan, items:["DCF from scratch — WACC, terminal value, sensitivity tables","EV/EBITDA vs P/E: when each metric lies to you","P/B ratio and ROE — bank stock analysis framework","Comparable company analysis: selecting the right comps"] },
-    { cat:"FINANCIAL ANALYSIS", color:C.amber, items:["How to read a 10-K like a hedge fund analyst","Free cash flow: the gap between accounting and reality","Altman Z-Score mechanics and real limitations","DuPont decomposition: dissecting ROE into its drivers"] },
-    { cat:"DERIVATIVES & RATES", color:C.purple, items:["Options delta hedging: the dynamic replication argument","Yield curve inversions: mechanics and recession signal","SOFR vs LIBOR: what actually changed and why it matters","Swaps pricing: bootstrapping a discount curve from first principles"] },
-    { cat:"YOUR PORTFOLIO", color:C.teal, items:["Tanker shipping market: FRO, VLCC dynamics, Hormuz risk","Defense sector valuation: LMT and RTX comp frameworks","Gold as a geopolitical hedge: GLD mechanics vs physical gold","Energy sector: upstream vs downstream margin analysis"] },
-    { cat:"TRADING CONCEPTS", color:C.green, items:["Market microstructure: bid-ask spread decomposition","Short interest and squeeze mechanics: GameStop autopsy","Factor investing: value, momentum, quality, low-vol","Options market making: inventory risk and delta hedging"] },
-  ];
+  const handleSearch = () => {
+    const q = input.trim();
+    if (!q) return;
+    requestLecture(q, true);
+    setInput("");
+  };
+
+  // ─── BROWSE VIEW ────────────────────────────────────────────────────────────
+  const BrowseView = () => (
+    <div>
+      {/* Search bar */}
+      <div style={{ marginBottom:16 }}>
+        <SearchInput value={input} onChange={setInput} onSubmit={handleSearch}
+          placeholder="ASK ANYTHING — OPTIONS GREEKS, YIELD CURVE, VLCC MARKETS, FACTOR MODELS..." />
+      </div>
+
+      {/* History strip */}
+      {history.length > 0 && (
+        <div style={{ marginBottom:14 }}>
+          <Mono color={C.textDim} size={8} spacing={1} style={{display:"block",marginBottom:6}}>RECENT LECTURES</Mono>
+          <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+            {history.slice(0, 8).map(h => (
+              <button key={h.topic} onClick={() => requestLecture(h.topic)}
+                style={{ background:"transparent", color:C.textDim, border:`1px solid ${C.border}`, fontFamily:"'IBM Plex Mono',monospace", fontSize:9, padding:"3px 10px", cursor:"pointer", letterSpacing:0.5 }}>
+                {h.topic.length > 35 ? h.topic.slice(0,35)+"…" : h.topic}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Curriculum */}
+      <div style={{ display:"grid", gridTemplateColumns:"200px 1fr", gap:0, border:`1px solid ${C.border}`, background:C.panel }}>
+        {/* Category sidebar */}
+        <div style={{ borderRight:`1px solid ${C.border}` }}>
+          <div style={{ padding:"8px 12px", background:"#0A0A0A", borderBottom:`1px solid ${C.border}` }}>
+            <Mono color={C.amber} size={8} spacing={1}>CURRICULUM</Mono>
+          </div>
+          {CURRICULUM.map(({cat, color, icon}) => (
+            <div key={cat} onClick={() => setActiveCat(cat)}
+              style={{ padding:"9px 12px", borderBottom:`1px solid ${C.border}`, cursor:"pointer",
+                background: activeCat===cat ? color+"18" : "transparent",
+                borderLeft: activeCat===cat ? `2px solid ${color}` : "2px solid transparent" }}>
+              <Mono color={activeCat===cat ? color : C.textDim} size={10} weight={activeCat===cat?700:400}>
+                {icon} {cat}
+              </Mono>
+            </div>
+          ))}
+        </div>
+
+        {/* Topic list */}
+        <div style={{ minHeight:400 }}>
+          {!activeCat && (
+            <div style={{ padding:"32px 24px", textAlign:"center" }}>
+              <Mono color={C.muted} size={10} style={{display:"block",marginBottom:8}}>SELECT A CURRICULUM CATEGORY</Mono>
+              <Mono color={C.border} size={9}>or use the search bar for any topic</Mono>
+            </div>
+          )}
+          {activeCat && (() => {
+            const cat = CURRICULUM.find(c => c.cat === activeCat);
+            return (
+              <div>
+                <div style={{ padding:"8px 14px", background:"#0A0A0A", borderBottom:`1px solid ${C.border}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                  <Mono color={cat.color} size={9} weight={700} spacing={0.5}>{cat.icon} {cat.cat}</Mono>
+                  <Mono color={C.muted} size={8}>{cat.topics.length} LECTURES</Mono>
+                </div>
+                {cat.topics.map(({title, level}) => (
+                  <div key={title} onClick={() => requestLecture(title)}
+                    style={{ padding:"11px 14px", borderBottom:`1px solid ${C.border}`, cursor:"pointer", display:"flex", alignItems:"center", gap:10 }}
+                    onMouseEnter={e=>{ e.currentTarget.style.background="#111"; }}
+                    onMouseLeave={e=>{ e.currentTarget.style.background="transparent"; }}>
+                    <span style={{ background:LEVEL_COLOR[level]+"22", color:LEVEL_COLOR[level], fontFamily:"'IBM Plex Mono',monospace", fontSize:7, fontWeight:700, padding:"2px 6px", letterSpacing:1, whiteSpace:"nowrap" }}>{level}</span>
+                    <Mono color={C.text} size={11}>{title}</Mono>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+        </div>
+      </div>
+    </div>
+  );
+
+  // ─── LECTURE VIEW ────────────────────────────────────────────────────────────
+  const LectureView = () => {
+    if (!lecture) return null;
+    const lcColor = LEVEL_COLOR[lecture.level] || C.text;
+
+    return (
+      <div>
+        {/* Nav back */}
+        <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:14 }}>
+          <button onClick={() => setView("browse")}
+            style={{ background:"transparent", color:C.textDim, border:`1px solid ${C.border}`, fontFamily:"'IBM Plex Mono',monospace", fontSize:9, padding:"4px 12px", cursor:"pointer" }}>
+            ← CURRICULUM
+          </button>
+          <Mono color={C.muted} size={9} spacing={1}>FINANCE ACADEMY · LECTURE</Mono>
+        </div>
+
+        {/* Lecture header */}
+        <div style={{ background:"#080808", border:`1px solid ${C.border}`, borderLeft:`3px solid ${C.green}`, padding:"16px 18px", marginBottom:12 }}>
+          <div style={{ display:"flex", gap:10, alignItems:"center", marginBottom:8 }}>
+            <span style={{ background:lcColor+"22", color:lcColor, fontFamily:"'IBM Plex Mono',monospace", fontSize:8, fontWeight:700, padding:"2px 8px", letterSpacing:1 }}>{LEVEL_LABEL[lecture.level]}</span>
+            <Mono color={C.muted} size={9}>⏱ {lecture.readTime}</Mono>
+          </div>
+          <div style={{ color:C.white, fontFamily:"'IBM Plex Mono',monospace", fontSize:16, fontWeight:700, letterSpacing:0.5, marginBottom:6 }}>{lecture.title}</div>
+          <Mono color={C.textDim} size={11} style={{lineHeight:1.6}}>{lecture.subtitle}</Mono>
+
+          {/* Prereqs */}
+          {lecture.prereqs?.length > 0 && (
+            <div style={{ marginTop:10, display:"flex", gap:6, flexWrap:"wrap", alignItems:"center" }}>
+              <Mono color={C.muted} size={8} spacing={1}>PREREQS:</Mono>
+              {lecture.prereqs.map(p => (
+                <button key={p} onClick={() => requestLecture(p)}
+                  style={{ background:C.muted+"22", color:C.muted, border:`1px solid ${C.border}`, fontFamily:"'IBM Plex Mono',monospace", fontSize:8, padding:"2px 8px", cursor:"pointer" }}>
+                  {p}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Sections */}
+        {(lecture.sections || []).map((sec, i) => {
+          const style = SECTION_STYLES[sec.type] || SECTION_STYLES.concept;
+          return (
+            <div key={i} style={{ background:style.bg, border:`1px solid ${style.border}33`, borderLeft:`3px solid ${style.border}`, padding:"14px 16px", marginBottom:10 }}>
+              <div style={{ display:"flex", gap:10, alignItems:"center", marginBottom:10 }}>
+                <span style={{ background:style.border+"33", color:style.border, fontFamily:"'IBM Plex Mono',monospace", fontSize:7, fontWeight:700, padding:"2px 8px", letterSpacing:2 }}>{style.label}</span>
+                <Mono color={C.white} size={11} weight={700} spacing={0.5}>{sec.title}</Mono>
+              </div>
+              <div style={{ color:C.text, fontFamily:"'IBM Plex Mono',monospace", fontSize:12, lineHeight:2, whiteSpace:"pre-wrap" }}>{sec.content}</div>
+            </div>
+          );
+        })}
+
+        {/* Key takeaways */}
+        {lecture.keyTakeaways?.length > 0 && (
+          <div style={{ background:"#001A0A", border:`1px solid ${C.green}33`, borderLeft:`3px solid ${C.green}`, padding:"14px 16px", marginBottom:10 }}>
+            <Mono color={C.green} size={8} weight={700} spacing={2} style={{display:"block",marginBottom:10}}>KEY TAKEAWAYS</Mono>
+            {lecture.keyTakeaways.map((t, i) => (
+              <div key={i} style={{ display:"flex", gap:8, padding:"5px 0", borderBottom:`1px solid ${C.border}` }}>
+                <Mono color={C.green} size={10}>{i+1}.</Mono>
+                <Mono color={C.text} size={11} style={{lineHeight:1.7}}>{t}</Mono>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Related topics */}
+        {lecture.relatedTopics?.length > 0 && (
+          <div style={{ background:C.panel, border:`1px solid ${C.border}`, padding:"12px 16px", marginBottom:10 }}>
+            <Mono color={C.amber} size={8} weight={700} spacing={2} style={{display:"block",marginBottom:8}}>CONTINUE LEARNING</Mono>
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+              {lecture.relatedTopics.map(t => (
+                <button key={t} onClick={() => requestLecture(t)}
+                  style={{ background:C.amber+"18", color:C.amber, border:`1px solid ${C.amber}44`, fontFamily:"'IBM Plex Mono',monospace", fontSize:9, padding:"6px 14px", cursor:"pointer", letterSpacing:0.5 }}>
+                  → {t}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Search for more */}
+        <div style={{ marginTop:16 }}>
+          <SearchInput value={input} onChange={setInput} onSubmit={handleSearch}
+            placeholder="ASK ANOTHER TOPIC..." />
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div>
-      <div style={{ marginBottom:10 }}><SearchInput value={input} onChange={setInput} onSubmit={()=>ask()} placeholder="ASK ANYTHING — TAUGHT AT INSTITUTIONAL DEPTH" /></div>
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:10, marginBottom:16 }}>
-        {topics.map(({cat,color,items}) => (
-          <div key={cat} style={{ background:C.panel, border:`1px solid ${C.border}`, padding:"10px 12px" }}>
-            <Mono color={color} size={8} weight={700} spacing={1.5} style={{display:"block",marginBottom:7}}>{cat}</Mono>
-            {items.map(t => (
-              <div key={t} onClick={()=>ask(t)}
-                style={{ color:C.textDim, fontFamily:"'IBM Plex Mono',monospace", fontSize:10, padding:"4px 0", borderBottom:`1px solid ${C.border}`, cursor:"pointer", lineHeight:1.4 }}
-                onMouseEnter={e=>e.currentTarget.style.color=C.cyan}
-                onMouseLeave={e=>e.currentTarget.style.color=C.textDim}
-              >→ {t}</div>
-            ))}
+      {err && <Mono color={C.red} size={11} style={{display:"block",padding:"8px 0",marginBottom:8}}>{err}</Mono>}
+      {loading ? (
+        <div>
+          <div style={{ marginBottom:10 }}>
+            <SearchInput value={input} onChange={setInput} onSubmit={handleSearch}
+              placeholder="ASK ANYTHING..." />
           </div>
-        ))}
-      </div>
-      {loading && <Loader msg={`PREPARING LECTURE: ${question.toUpperCase().slice(0,50)}`} />}
-      {answer && (
-        <PanelBox title={`LECTURE: ${question.toUpperCase().slice(0,70)}`} titleColor={C.green}>
-          <div style={{ color:C.text, fontFamily:"'IBM Plex Mono',monospace", fontSize:12, lineHeight:2.1, whiteSpace:"pre-wrap" }}>{answer}</div>
-        </PanelBox>
-      )}
+          <Loader msg={loadingMsg} />
+        </div>
+      ) : view === "browse" ? <BrowseView /> : <LectureView />}
     </div>
   );
 }
