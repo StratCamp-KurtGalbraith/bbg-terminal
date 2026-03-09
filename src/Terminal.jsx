@@ -816,28 +816,31 @@ function NEWSPanel() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
 
+  // Auto-load top business headlines on mount (empty query → top-headlines route)
+  useEffect(() => { search(""); }, []);
+
   const search = async (q) => {
-    const query = q || input;
-    if (!query.trim()) return;
+    const query = q !== undefined ? q : input;
     setLoading(true); setData(null);
     try {
       if (IS_LOCAL) {
         // Fetch real headlines from NewsAPI
-        const newsRes = await fetchNews(query, 8);
+        const newsRes = await fetchNews(query, 10);
         const articles = newsRes.articles || [];
         if (articles.length === 0) {
-          setData({ topic: query, marketImpact: "NEUTRAL", execSummary: "No recent news found for this query.", tradingTake: "Insufficient data.", items: [] });
+          setData({ topic: query || "MARKET NEWS", marketImpact: "NEUTRAL", execSummary: "No recent news found.", tradingTake: "Try a different query.", items: [] });
           setLoading(false); return;
         }
         // Use Claude ONLY for exec brief + trading take (cheap: ~150 tokens out)
+        const topicLabel = query || "global financial markets";
         const headlines = articles.map((a,i) => `${i+1}. ${a.headline}`).join("\n");
         const aiTxt = await fetchAI(
-          `These are real news headlines about "${query}":\n${headlines}\nWrite a 2-sentence executive brief and 1-sentence trading take. Return ONLY JSON: {"execSummary":"2 sentences","tradingTake":"1 sentence","marketImpact":"BULLISH/BEARISH/MIXED/NEUTRAL"}`,
+          `These are real news headlines about "${topicLabel}":\n${headlines}\nWrite a 2-sentence executive brief and 1-sentence trading take. Return ONLY JSON: {"execSummary":"2 sentences","tradingTake":"1 sentence","marketImpact":"BULLISH/BEARISH/MIXED/NEUTRAL"}`,
           "Return ONLY valid JSON.", 200
         );
         const ai = parseJSON(aiTxt) || { execSummary: "See headlines below.", tradingTake: "Monitor developments.", marketImpact: "NEUTRAL" };
         setData({
-          topic: query,
+          topic: query || "TOP MARKET STORIES",
           marketImpact: ai.marketImpact,
           execSummary:  ai.execSummary,
           tradingTake:  ai.tradingTake,
@@ -846,7 +849,7 @@ function NEWSPanel() {
             source:    a.source,
             date:      a.date,
             impact:    classifyHeadline(a.headline),
-            summary:   a.summary?.slice(0,160) || "",
+            summary:   a.summary?.slice(0,180) || "",
             relevance: "HIGH",
           })),
         });
@@ -869,7 +872,7 @@ function NEWSPanel() {
 
   return (
     <div>
-      <div style={{ marginBottom:10 }}><SearchInput value={input} onChange={setInput} onSubmit={()=>search()} placeholder="TICKER, TOPIC, MACRO EVENT, OR THEME" /></div>
+      <div style={{ marginBottom:10 }}><SearchInput value={input} onChange={setInput} onSubmit={()=>search()} placeholder="SEARCH: TICKER, TOPIC, MACRO EVENT, OR THEME (auto-loaded)" /></div>
       <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:16 }}>
         {presets.map(p => <button key={p} onClick={()=>{setInput(p);search(p);}} style={{ background:"transparent", color:C.muted, border:`1px solid ${C.border}`, fontFamily:"'IBM Plex Mono',monospace", fontSize:9, padding:"4px 10px", cursor:"pointer" }}>{p}</button>)}
       </div>
@@ -916,87 +919,163 @@ function MACROPanel() {
   const load = async () => {
     setLoading(true); setData(null);
     try {
-      if (IS_LOCAL) {
-        // Pure live data — Yahoo Finance + FRED. Zero Claude cost.
-        const d = await fetchMacroData();
-        const r = d.rates || {};
-        const fv = v => v != null ? `${parseFloat(v).toFixed(2)}%` : "N/A";
-        const spread = r.spread2s10s != null
-          ? `${parseFloat(r.spread2s10s) > 0 ? "+" : ""}${(parseFloat(r.spread2s10s) * 100).toFixed(0)}bps`
-          : null;
-        setData({
-          indices:     d.indices,
-          commodities: d.commodities,
-          fx:          d.fx,
-          timestamp:   d.timestamp,
-          fredMissing: d.fredMissing,
-          rates: [
-            { label: "Fed Funds Rate",  val: fv(r.fedFunds) },
-            { label: "2Y Treasury",     val: fv(r.t2y)      },
-            { label: "10Y Treasury",    val: fv(r.t10y ?? r.tnx) },
-            { label: "30Y Treasury",    val: fv(r.t30y ?? r.tyx) },
-            { label: "2s10s Spread",    val: spread ?? "N/A" },
-            { label: "SOFR",            val: fv(r.sofr)     },
-          ],
-          macro_env: null,
-        });
-      } else {
-        const prompt = `Search current global market data. Return ONLY JSON: {"indices":[{"name":"S&P 500","sym":"SPX","value":number,"changePct":number},{"name":"NASDAQ 100","sym":"NDX","value":number,"changePct":number},{"name":"DJIA","sym":"DJIA","value":number,"changePct":number},{"name":"Russell 2000","sym":"RUT","value":number,"changePct":number},{"name":"VIX","sym":"VIX","value":number,"changePct":number}],"rates":[{"label":"Fed Funds Rate","val":"X.XX%"},{"label":"2Y Treasury","val":"X.XX%"},{"label":"10Y Treasury","val":"X.XX%"},{"label":"30Y Treasury","val":"X.XX%"},{"label":"2s10s Spread","val":"Xbps"},{"label":"SOFR","val":"X.XX%"}],"commodities":[{"name":"WTI Crude Oil","price":number,"changePct":number},{"name":"Brent Crude","price":number,"changePct":number},{"name":"Gold","price":number,"changePct":number},{"name":"Silver","price":number,"changePct":number},{"name":"Natural Gas","price":number,"changePct":number},{"name":"Copper","price":number,"changePct":number}],"fx":[{"pair":"DXY Index","rate":number,"changePct":number},{"pair":"EUR/USD","rate":number,"changePct":number},{"pair":"GBP/USD","rate":number,"changePct":number},{"pair":"USD/JPY","rate":number,"changePct":number},{"pair":"USD/CNH","rate":number,"changePct":number}],"macro_env":"3 sentence assessment"}`;
-        const txt = await fetchAI(prompt, "Return ONLY valid compact JSON.", 1500);
-        const parsed = parseJSON(txt);
-        if (parsed) setData(parsed);
-      }
+      const d = await fetchMacroData();
+      const r = d.rates || {};
+      const fv = (v, dec=2) => v != null ? `${parseFloat(v).toFixed(dec)}%` : "N/A";
+      const bps = v => v != null ? `${(parseFloat(v)*100).toFixed(0)}bps` : "N/A";
+      const spd = v => {
+        if (v == null) return "N/A";
+        const n = parseFloat(v);
+        return `${n >= 0 ? "+" : ""}${(n*100).toFixed(0)}bps`;
+      };
+
+      setData({
+        indices:     d.indices,
+        commodities: d.commodities,
+        fx:          d.fx,
+        bonds:       d.bonds,
+        timestamp:   d.timestamp,
+        fredAvailable: d.fredAvailable,
+        rates: [
+          { label: "Fed Funds",      val: fv(r.fedFunds),    highlight: true },
+          { label: "SOFR",           val: fv(r.sofr) },
+          { label: "2Y Treasury",    val: fv(r.t2y) },
+          { label: "5Y Treasury",    val: fv(r.t5y) },
+          { label: "10Y Treasury",   val: fv(r.t10y ?? r.tnx), highlight: true },
+          { label: "30Y Treasury",   val: fv(r.t30y ?? r.tyx) },
+          { label: "2s10s Spread",   val: spd(r.spread2s10s), spread: r.spread2s10s },
+        ],
+        realRates: [
+          { label: "10Y Real Yield",   val: fv(r.realYield10), note: "TIPS" },
+          { label: "10Y Breakeven",    val: fv(r.breakeven10), note: "Inflation" },
+          { label: "Nom–Real Spread",  val: r.t10y != null && r.realYield10 != null
+              ? fv(r.t10y - r.realYield10) + " nom premium" : "N/A", note: "" },
+        ],
+        credit: [
+          { label: "IG OAS",         val: bps(r.igOas),    note: "Inv. Grade" },
+          { label: "HY OAS",         val: bps(r.hyOas),    note: "High Yield" },
+          { label: "TED Spread",     val: bps(r.tedSpread), note: "Credit stress" },
+          { label: "IG ETF (LQD)",   val: d.bonds?.lqdPrice != null ? `$${d.bonds.lqdPrice.toFixed(2)}` : "N/A",
+            chgPct: d.bonds?.lqdChg },
+          { label: "HY ETF (HYG)",   val: d.bonds?.hygPrice != null ? `$${d.bonds.hygPrice.toFixed(2)}` : "N/A",
+            chgPct: d.bonds?.hygChg },
+          { label: "20Y+ Bond (TLT)", val: d.bonds?.tltPrice != null ? `$${d.bonds.tltPrice.toFixed(2)}` : "N/A",
+            chgPct: d.bonds?.tltChg },
+        ],
+      });
     } catch(e) { console.error(e); }
     setLoading(false);
   };
 
   useEffect(() => { load(); }, []);
-  const cc = v => v > 0 ? C.green : v < 0 ? C.red : C.text;
+  const cc = v => v == null ? C.muted : v > 0 ? C.green : v < 0 ? C.red : C.text;
+  const sc = v => v == null ? C.muted : parseFloat(v) < 0 ? C.green : C.red; // spread: neg = inverted (red)
+
+  const MiniRow = ({ label, val, chgPct, note, highlight, spread, isSpread }) => (
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"5px 0", borderBottom:`1px solid ${C.border}` }}>
+      <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+        <Mono color={highlight ? C.white : C.text} size={11} weight={highlight ? 600 : 400}>{label}</Mono>
+        {note && <Mono color={C.muted} size={8}>{note}</Mono>}
+      </div>
+      <div style={{ display:"flex", gap:10, alignItems:"center" }}>
+        {chgPct != null && <Mono color={cc(chgPct)} size={9}>{chgPct > 0 ? "+" : ""}{chgPct?.toFixed(2)}%</Mono>}
+        <Mono color={isSpread ? sc(spread) : C.cyan} size={11} weight={600}>{val}</Mono>
+      </div>
+    </div>
+  );
 
   return (
     <div>
+      {/* Header */}
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
-        <Mono color={C.textDim} size={10} spacing={1}>GLOBAL MACRO DASHBOARD — LIVE</Mono>
+        <div>
+          <Mono color={C.textDim} size={10} spacing={1}>GLOBAL MACRO DASHBOARD</Mono>
+          {data?.timestamp && <Mono color={C.muted} size={8} style={{marginLeft:10}}>AS OF {new Date(data.timestamp).toLocaleTimeString()}</Mono>}
+          {data && !data.fredAvailable && <span style={{ marginLeft:10, background:"rgba(255,165,0,0.15)", border:"1px solid rgba(255,165,0,0.3)", borderRadius:3, padding:"1px 6px" }}><Mono color={C.amber} size={8}>FRED KEY MISSING — RATE DATA LIMITED</Mono></span>}
+        </div>
         <Btn onClick={load} disabled={loading} variant="outline" color={C.amber}>{loading?"LOADING...":"↺ REFRESH"}</Btn>
       </div>
+
       {loading && <Loader msg="FETCHING GLOBAL MARKET DATA" />}
+
       {data && (
-        <div>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:10 }}>
-            <PanelBox title="EQUITY INDICES">
+        <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+          {/* Row 1: Equities + Rates */}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+            <PanelBox title="EQUITY INDICES / VOL">
               {(data.indices||[]).map(idx => (
                 <div key={idx.sym} style={{ display:"flex", justifyContent:"space-between", padding:"5px 0", borderBottom:`1px solid ${C.border}` }}>
                   <div><Mono color={C.text} size={11}>{idx.name}</Mono> <Mono color={C.muted} size={9}>{idx.sym}</Mono></div>
-                  <div><Mono color={C.white} size={12} weight={600}>{idx.value?.toLocaleString("en",{maximumFractionDigits:2})}</Mono><Mono color={cc(idx.changePct)} size={10} style={{marginLeft:10}}>{idx.changePct>0?"+":""}{idx.changePct?.toFixed(2)}%</Mono></div>
+                  <div style={{ textAlign:"right" }}>
+                    <Mono color={C.white} size={12} weight={600}>{idx.value?.toLocaleString("en",{maximumFractionDigits:2})}</Mono>
+                    <Mono color={cc(idx.changePct)} size={10} style={{marginLeft:10}}>{idx.changePct != null ? `${idx.changePct>0?"+":""}${idx.changePct?.toFixed(2)}%` : "--"}</Mono>
+                  </div>
                 </div>
               ))}
             </PanelBox>
-            <PanelBox title="US INTEREST RATES">
+
+            <PanelBox title="US TREASURY CURVE">
               {(data.rates||[]).map(r => (
-                <div key={r.label} style={{ display:"flex", justifyContent:"space-between", padding:"5px 0", borderBottom:`1px solid ${C.border}` }}>
-                  <Mono color={C.text} size={11}>{r.label}</Mono>
-                  <div><Mono color={C.cyan} size={11} weight={600}>{r.val}</Mono>{r.chg&&<Mono color={C.textDim} size={9} style={{marginLeft:8}}>{r.chg}</Mono>}</div>
-                </div>
+                <MiniRow key={r.label} label={r.label} val={r.val} highlight={r.highlight}
+                  isSpread={r.label.includes("Spread")} spread={r.spread} />
               ))}
             </PanelBox>
-            <PanelBox title="COMMODITIES">
-              {(data.commodities||[]).map(c => (
-                <div key={c.name} style={{ display:"flex", justifyContent:"space-between", padding:"5px 0", borderBottom:`1px solid ${C.border}` }}>
-                  <Mono color={C.text} size={11}>{c.name}</Mono>
-                  <div><Mono color={C.white} size={11} weight={600}>${c.price?.toFixed(2)}</Mono><Mono color={cc(c.changePct)} size={10} style={{marginLeft:10}}>{c.changePct>0?"+":""}{c.changePct?.toFixed(2)}%</Mono></div>
-                </div>
+          </div>
+
+          {/* Row 2: Real Yields + Credit */}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+            <PanelBox title="REAL YIELDS & INFLATION EXPECTATIONS">
+              {(data.realRates||[]).map(r => (
+                <MiniRow key={r.label} label={r.label} val={r.val} note={r.note} />
               ))}
+              <div style={{ marginTop:8, padding:"6px 0", borderTop:`1px solid ${C.border}` }}>
+                <Mono color={C.muted} size={9}>10Y Real Yield = 10Y Nominal − 10Y Breakeven.</Mono>
+                <Mono color={C.muted} size={9} style={{display:"block",marginTop:3}}>Negative real yield → gold/risk assets supported.</Mono>
+              </div>
             </PanelBox>
-            <PanelBox title="FX / DOLLAR">
-              {(data.fx||[]).map(f => (
-                <div key={f.pair} style={{ display:"flex", justifyContent:"space-between", padding:"5px 0", borderBottom:`1px solid ${C.border}` }}>
-                  <Mono color={C.text} size={11}>{f.pair}</Mono>
-                  <div><Mono color={C.white} size={11} weight={600}>{f.rate?.toFixed(4)}</Mono><Mono color={cc(f.changePct)} size={10} style={{marginLeft:10}}>{f.changePct>0?"+":""}{f.changePct?.toFixed(2)}%</Mono></div>
+
+            <PanelBox title="CREDIT MARKETS">
+              {(data.credit||[]).map(r => (
+                <div key={r.label} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"5px 0", borderBottom:`1px solid ${C.border}` }}>
+                  <div>
+                    <Mono color={C.text} size={11}>{r.label}</Mono>
+                    {r.note && <Mono color={C.muted} size={8} style={{marginLeft:8}}>{r.note}</Mono>}
+                  </div>
+                  <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                    {r.chgPct != null && <Mono color={cc(r.chgPct)} size={9}>{r.chgPct > 0 ? "+" : ""}{r.chgPct?.toFixed(2)}%</Mono>}
+                    <Mono color={C.cyan} size={11} weight={600}>{r.val}</Mono>
+                  </div>
                 </div>
               ))}
             </PanelBox>
           </div>
-          {data.macro_env && <PanelBox title="MACRO ENVIRONMENT ASSESSMENT"><p style={{ color:C.text, fontFamily:"'IBM Plex Mono',monospace", fontSize:12, lineHeight:1.9, margin:0 }}>{data.macro_env}</p></PanelBox>}
+
+          {/* Row 3: Commodities + FX */}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+            <PanelBox title="COMMODITIES">
+              {(data.commodities||[]).map(c => (
+                <div key={c.name} style={{ display:"flex", justifyContent:"space-between", padding:"5px 0", borderBottom:`1px solid ${C.border}` }}>
+                  <Mono color={C.text} size={11}>{c.name}</Mono>
+                  <div>
+                    <Mono color={C.white} size={11} weight={600}>{c.price != null ? `$${c.price.toFixed(2)}` : "--"}</Mono>
+                    <Mono color={cc(c.changePct)} size={10} style={{marginLeft:10}}>{c.changePct != null ? `${c.changePct>0?"+":""}${c.changePct?.toFixed(2)}%` : "--"}</Mono>
+                  </div>
+                </div>
+              ))}
+            </PanelBox>
+
+            <PanelBox title="FX / DOLLAR">
+              {(data.fx||[]).map(f => (
+                <div key={f.pair} style={{ display:"flex", justifyContent:"space-between", padding:"5px 0", borderBottom:`1px solid ${C.border}` }}>
+                  <Mono color={C.text} size={11}>{f.pair}</Mono>
+                  <div>
+                    <Mono color={C.white} size={11} weight={600}>{f.rate != null ? f.rate.toFixed(f.pair.includes("JPY")||f.pair.includes("KRW")?2:4) : "--"}</Mono>
+                    <Mono color={cc(f.changePct)} size={10} style={{marginLeft:10}}>{f.changePct != null ? `${f.changePct>0?"+":""}${f.changePct?.toFixed(2)}%` : "--"}</Mono>
+                  </div>
+                </div>
+              ))}
+            </PanelBox>
+          </div>
         </div>
       )}
     </div>

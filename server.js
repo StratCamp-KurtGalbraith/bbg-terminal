@@ -286,26 +286,41 @@ function handleFinancials(req, res) {
 
 // ── Route: GET /macro ──────────────────────────────────────────────────────────
 function handleMacro(req, res) {
-  const macroSymbols = [
+  // All symbols via v8/chart — no auth required
+  const yahooSymbols = [
     "^GSPC","^NDX","^DJI","^RUT","^VIX",
-    "CL=F","BZ=F","GC=F","SI=F","NG=F","HG=F",
-    "EURUSD=X","GBPUSD=X","USDJPY=X","USDCNH=X","DX-Y.NYB",
-    "^TNX","^FVX","^TYX","^IRX",
-  ].join(",");
+    "CL=F","BZ=F","GC=F","SI=F","NG=F","HG=F","RB=F",
+    "EURUSD=X","GBPUSD=X","USDJPY=X","USDCNH=X","USDBRL=X","USDKRW=X","DX-Y.NYB",
+    "^TNX","^FVX","^TYX","^IRX","^MOVE",
+    "LQD","HYG","TLT","AGG",
+  ];
 
-  const fredSeries = FRED_KEY ? ["DFF","DGS2","DGS10","DGS30","SOFR","T10Y2Y"] : [];
-  let yahooData = null, fredData = {}, pending = 1 + fredSeries.length;
+  // Expanded FRED series
+  const fredSeries = FRED_KEY ? [
+    "DFF",      // Fed Funds Rate (actual)
+    "DGS2",     // 2Y Treasury
+    "DGS5",     // 5Y Treasury
+    "DGS10",    // 10Y Treasury
+    "DGS30",    // 30Y Treasury
+    "DFII10",   // 10Y Real (TIPS) yield
+    "T10YIE",   // 10Y Breakeven inflation
+    "SOFR",     // SOFR rate
+    "T10Y2Y",   // 2s10s spread
+    "BAMLC0A0CMEY",   // Investment grade OAS
+    "BAMLH0A0HYM2EY", // High yield OAS
+    "TEDRATE",  // TED spread (credit stress)
+  ] : [];
+
+  let yahooData = {}, fredData = {};
+  let pending = 1 + fredSeries.length;
   let responded = false;
 
   function respond() {
     if (responded) return;
     responded = true;
-    const quotes = yahooData?.quoteResponse?.result || [];
-    const by = {};
-    quotes.forEach(q => { by[q.symbol] = q; });
-
-    const price = s => by[s]?.regularMarketPrice ?? null;
-    const pct   = s => by[s]?.regularMarketChangePercent ?? null;
+    const by = yahooData; // already keyed by symbol from fetchPricesFallback
+    const p  = s => by[s]?.price ?? null;
+    const pc = s => by[s]?.changePct ?? null;
 
     const fv = id => fredData[id] ?? null;
     const spread = fv("T10Y2Y");
@@ -314,50 +329,65 @@ function handleMacro(req, res) {
       timestamp: new Date().toISOString(),
       fredAvailable: fredSeries.length > 0,
       indices: [
-        { name: "S&P 500",      sym: "SPX",  value: price("^GSPC"), changePct: pct("^GSPC") },
-        { name: "NASDAQ 100",   sym: "NDX",  value: price("^NDX"),  changePct: pct("^NDX")  },
-        { name: "DJIA",         sym: "DJIA", value: price("^DJI"),  changePct: pct("^DJI")  },
-        { name: "Russell 2000", sym: "RUT",  value: price("^RUT"),  changePct: pct("^RUT")  },
-        { name: "VIX",          sym: "VIX",  value: price("^VIX"),  changePct: pct("^VIX")  },
+        { name: "S&P 500",      sym: "SPX",  value: p("^GSPC"), changePct: pc("^GSPC") },
+        { name: "NASDAQ 100",   sym: "NDX",  value: p("^NDX"),  changePct: pc("^NDX")  },
+        { name: "DJIA",         sym: "DJIA", value: p("^DJI"),  changePct: pc("^DJI")  },
+        { name: "Russell 2000", sym: "RUT",  value: p("^RUT"),  changePct: pc("^RUT")  },
+        { name: "VIX",          sym: "VIX",  value: p("^VIX"),  changePct: pc("^VIX")  },
+        { name: "MOVE Index",   sym: "MOVE", value: p("^MOVE"), changePct: pc("^MOVE") },
       ],
       rates: {
         fedFunds:    fv("DFF"),
-        t2y:         fv("DGS2"),
-        t10y:        fv("DGS10") ?? price("^TNX"),
-        t30y:        fv("DGS30") ?? price("^TYX"),
+        t2y:         fv("DGS2")  ?? p("^IRX"),
+        t5y:         fv("DGS5"),
+        t10y:        fv("DGS10") ?? p("^TNX"),
+        t30y:        fv("DGS30") ?? p("^TYX"),
+        realYield10: fv("DFII10"),
+        breakeven10: fv("T10YIE"),
         sofr:        fv("SOFR"),
-        spread2s10s: spread != null ? spread / 100 : null,  // AV returns in %, convert to decimal
-        tnx:         price("^TNX"),
-        tyx:         price("^TYX"),
+        spread2s10s: spread != null ? spread / 100 : null,
+        tnx:         p("^TNX"),
+        tyx:         p("^TYX"),
+        igOas:       fv("BAMLC0A0CMEY"),
+        hyOas:       fv("BAMLH0A0HYM2EY"),
+        tedSpread:   fv("TEDRATE"),
       },
       commodities: [
-        { name: "WTI Crude Oil", sym: "CL=F", price: price("CL=F"), changePct: pct("CL=F") },
-        { name: "Brent Crude",   sym: "BZ=F", price: price("BZ=F"), changePct: pct("BZ=F") },
-        { name: "Gold",          sym: "GC=F", price: price("GC=F"), changePct: pct("GC=F") },
-        { name: "Silver",        sym: "SI=F", price: price("SI=F"), changePct: pct("SI=F") },
-        { name: "Natural Gas",   sym: "NG=F", price: price("NG=F"), changePct: pct("NG=F") },
-        { name: "Copper",        sym: "HG=F", price: price("HG=F"), changePct: pct("HG=F") },
+        { name: "WTI Crude Oil", sym: "CL=F", price: p("CL=F"), changePct: pc("CL=F") },
+        { name: "Brent Crude",   sym: "BZ=F", price: p("BZ=F"), changePct: pc("BZ=F") },
+        { name: "Gold",          sym: "GC=F", price: p("GC=F"), changePct: pc("GC=F") },
+        { name: "Silver",        sym: "SI=F", price: p("SI=F"), changePct: pc("SI=F") },
+        { name: "Natural Gas",   sym: "NG=F", price: p("NG=F"), changePct: pc("NG=F") },
+        { name: "Copper",        sym: "HG=F", price: p("HG=F"), changePct: pc("HG=F") },
+        { name: "RBOB Gasoline", sym: "RB=F", price: p("RB=F"), changePct: pc("RB=F") },
       ],
       fx: [
-        { pair: "DXY Index", rate: price("DX-Y.NYB"), changePct: pct("DX-Y.NYB") },
-        { pair: "EUR/USD",   rate: price("EURUSD=X"), changePct: pct("EURUSD=X") },
-        { pair: "GBP/USD",   rate: price("GBPUSD=X"), changePct: pct("GBPUSD=X") },
-        { pair: "USD/JPY",   rate: price("USDJPY=X"), changePct: pct("USDJPY=X") },
-        { pair: "USD/CNH",   rate: price("USDCNH=X"), changePct: pct("USDCNH=X") },
+        { pair: "DXY Index", rate: p("DX-Y.NYB"), changePct: pc("DX-Y.NYB") },
+        { pair: "EUR/USD",   rate: p("EURUSD=X"), changePct: pc("EURUSD=X") },
+        { pair: "GBP/USD",   rate: p("GBPUSD=X"), changePct: pc("GBPUSD=X") },
+        { pair: "USD/JPY",   rate: p("USDJPY=X"), changePct: pc("USDJPY=X") },
+        { pair: "USD/CNH",   rate: p("USDCNH=X"), changePct: pc("USDCNH=X") },
+        { pair: "USD/BRL",   rate: p("USDBRL=X"), changePct: pc("USDBRL=X") },
+        { pair: "USD/KRW",   rate: p("USDKRW=X"), changePct: pc("USDKRW=X") },
       ],
+      bonds: {
+        lqdPrice:  p("LQD"),  lqdChg: pc("LQD"),
+        hygPrice:  p("HYG"),  hygChg: pc("HYG"),
+        tltPrice:  p("TLT"),  tltChg: pc("TLT"),
+        aggPrice:  p("AGG"),  aggChg: pc("AGG"),
+      },
     });
   }
 
   function tick() { pending--; if (pending <= 0) respond(); }
 
-  // Yahoo fetch
-  yahooGet(`/v7/finance/quote?symbols=${encodeURIComponent(macroSymbols)}&fields=regularMarketPrice,regularMarketChangePercent`, (err, data) => {
-    if (!err) yahooData = data;
-    else console.error("Macro Yahoo error:", err.message);
+  // Use v8 chart API — no auth, always works
+  fetchPricesFallback(yahooSymbols).then(data => {
+    yahooData = data;
     tick();
-  });
+  }).catch(() => tick());
 
-  // FRED fetches (parallel, optional)
+  // FRED fetches — parallel
   fredSeries.forEach(id => {
     fredGet(id, (err, val) => {
       fredData[id] = val;
@@ -372,12 +402,14 @@ function handleNews(req, res) {
   const q        = url.parse(req.url, true).query;
   const query    = q.q || "";
   const pageSize = Math.min(parseInt(q.pageSize || "8"), 10);
-  if (!query) return jsonErr(res, 400, "q required");
+  if (!query) query = "global financial markets stocks bonds economy";  // default: top market news
 
   httpsGet({
     hostname: "newsapi.org",
     port: 443,
-    path: `/v2/everything?q=${encodeURIComponent(query)}&pageSize=${pageSize}&language=en&sortBy=publishedAt&apiKey=${NEWS_KEY}`,
+    path: q.q
+      ? `/v2/everything?q=${encodeURIComponent(query)}&pageSize=${pageSize}&language=en&sortBy=publishedAt&apiKey=${NEWS_KEY}`
+      : `/v2/top-headlines?category=business&language=en&pageSize=${pageSize}&apiKey=${NEWS_KEY}`,
     method: "GET",
     headers: { "Accept": "application/json", "User-Agent": "BBGTerminal/1.0" },
   }, (err, data) => {
