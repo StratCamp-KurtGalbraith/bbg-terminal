@@ -234,6 +234,18 @@ function classifyHeadline(text) {
   return "NEUTRAL";
 }
 
+// Classify news headline into market category
+function classifyCategory(text) {
+  if (!text) return "MARKETS";
+  const t = text.toLowerCase();
+  if (/iran|israel|war|military|opec|strait|hormuz|russia|ukraine|china|taiwan|nato|sanction|geopolit|bomb|attack|troops|missile|conflict/.test(t)) return "GEOPOLITICS";
+  if (/oil|crude|gas|brent|wti|energy|petroleum|lng|pipeline|refin|barrel|chevron|exxon|shell|halliburton|tanker|frontline/.test(t)) return "ENERGY";
+  if (/fed|federal reserve|interest rate|yield|bond|treasury|sofr|libor|inflation|cpi|fomc|powell|ecb|boj|boe|central bank|taper|qe|qt/.test(t)) return "RATES";
+  if (/gdp|unemployment|jobs|payroll|recession|growth|economy|macro|fiscal|deficit|debt|spending|congress|budget/.test(t)) return "MACRO";
+  if (/merger|acquisition|ipo|earnings|revenue|profit|eps|guidance|split|buyback|dividend|sec|lawsuit|executive|ceo/.test(t)) return "CORP";
+  return "MARKETS";
+}
+
 // ─── SHARED COMPONENTS ───────────────────────────────────────────────────────
 const Mono = ({ children, color, size = 11, weight = 400, spacing = 0, style = {} }) => (
   <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: color || C.text, fontSize: size, fontWeight: weight, letterSpacing: spacing, ...style }}>
@@ -812,35 +824,33 @@ Write a structured institutional review covering: thesis validation, top perform
 }
 // ─── F3: NEWS — MARKET INTELLIGENCE ─────────────────────────────────────────
 function NEWSPanel() {
-  const [input, setInput] = useState("");
-  const [data, setData] = useState(null);
+  const [input, setInput]     = useState("");
+  const [data, setData]       = useState(null);
   const [loading, setLoading] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
 
-  // Auto-load top business headlines on mount (empty query → top-headlines route)
-  useEffect(() => { search(""); }, []);
+  useEffect(() => { load(""); }, []);
 
-  const search = async (q) => {
+  const load = async (q) => {
     const query = q !== undefined ? q : input;
     setLoading(true); setData(null);
     try {
       if (IS_LOCAL) {
-        // Fetch real headlines from NewsAPI
-        const newsRes = await fetchNews(query, 10);
+        const newsRes = await fetchNews(query, 12);
         const articles = newsRes.articles || [];
-        if (articles.length === 0) {
-          setData({ topic: query || "MARKET NEWS", marketImpact: "NEUTRAL", execSummary: "No recent news found.", tradingTake: "Try a different query.", items: [] });
+        if (!articles.length) {
+          setData({ topic: "TOP STORIES", items: [], execSummary: "No articles found.", tradingTake: "", marketImpact: "NEUTRAL" });
           setLoading(false); return;
         }
-        // Use Claude ONLY for exec brief + trading take (cheap: ~150 tokens out)
         const topicLabel = query || "global financial markets";
-        const headlines = articles.map((a,i) => `${i+1}. ${a.headline}`).join("\n");
+        const headlines  = articles.map((a,i) => `${i+1}. ${a.headline}`).join("\n");
         const aiTxt = await fetchAI(
-          `These are real news headlines about "${topicLabel}":\n${headlines}\nWrite a 2-sentence executive brief and 1-sentence trading take. Return ONLY JSON: {"execSummary":"2 sentences","tradingTake":"1 sentence","marketImpact":"BULLISH/BEARISH/MIXED/NEUTRAL"}`,
-          "Return ONLY valid JSON.", 200
+          `These are real financial news headlines:\n${headlines}\nWrite a 1-sentence market brief and 1-sentence trading take. Return ONLY JSON: {"execSummary":"1 sentence","tradingTake":"1 sentence","marketImpact":"BULLISH/BEARISH/MIXED/NEUTRAL"}`,
+          "Return ONLY valid JSON.", 150
         );
-        const ai = parseJSON(aiTxt) || { execSummary: "See headlines below.", tradingTake: "Monitor developments.", marketImpact: "NEUTRAL" };
+        const ai = parseJSON(aiTxt) || { execSummary: "Markets in focus.", tradingTake: "Monitor developments.", marketImpact: "NEUTRAL" };
         setData({
-          topic: query || "TOP MARKET STORIES",
+          topic: query ? query.toUpperCase() : "TOP STORIES",
           marketImpact: ai.marketImpact,
           execSummary:  ai.execSummary,
           tradingTake:  ai.tradingTake,
@@ -848,119 +858,229 @@ function NEWSPanel() {
             headline:  a.headline,
             source:    a.source,
             date:      a.date,
+            url:       a.url,
             impact:    classifyHeadline(a.headline),
-            summary:   a.summary?.slice(0,180) || "",
-            relevance: "HIGH",
+            summary:   a.summary?.slice(0, 200) || "",
+            category:  classifyCategory(a.headline),
           })),
         });
       } else {
-        const prompt = `Search for latest financial news about: "${query}". Return ONLY JSON: {"topic":"${query}","marketImpact":"BULLISH/BEARISH/MIXED/NEUTRAL","execSummary":"2-3 sentence brief","tradingTake":"2 sentence trading implication","items":[{"headline":"text","source":"name","date":"date","impact":"BULLISH/BEARISH/NEUTRAL","summary":"2 sentence summary"}]} Include 6-8 items.`;
-        const txt = await fetchAI(prompt, "Return ONLY valid compact JSON.", 2000);
+        const prompt = `Search for the most important financial market news right now. Return ONLY JSON: {"topic":"TOP STORIES","marketImpact":"BULLISH/BEARISH/MIXED/NEUTRAL","execSummary":"1-sentence brief","tradingTake":"1-sentence trading take","items":[{"headline":"text","source":"name","date":"today","impact":"BULLISH/BEARISH/NEUTRAL","summary":"2-3 sentence description of what happened and why it matters","category":"MARKETS/RATES/GEOPOLITICS/ENERGY/MACRO/CORP"}]} Include 10 items prioritized by market significance.`;
+        const txt = await fetchAI(prompt, "Return ONLY valid compact JSON.", 2500);
         const parsed = parseJSON(txt);
-        if (parsed) setData(parsed);
+        if (parsed) {
+          parsed.items = (parsed.items||[]).map(it => ({ ...it, category: it.category || classifyCategory(it.headline) }));
+          setData(parsed);
+        }
       }
-    } catch(e) {
-      if (e.message.includes("NEWS_API_KEY")) setData({ topic: query, marketImpact: "NEUTRAL", execSummary: "NewsAPI key not configured. Add NEWS_API_KEY to your environment variables (free at newsapi.org/register).", tradingTake: "", items: [] });
-      else console.error(e);
-    }
+    } catch(e) { console.error(e); }
     setLoading(false);
   };
 
-  const presets = ["Iran Strait of Hormuz military","Global oil markets OPEC","Defense sector RTX LMT spending","Gold GLD safe haven","FRO Frontline tanker shipping","US Israel military operations","Fed interest rates 2026","Geopolitical risk premium markets"];
-  const ic = (v) => v==="BULLISH"?C.green:v==="BEARISH"?C.red:C.textDim;
-  const oc = data?.marketImpact==="BULLISH"?C.green:data?.marketImpact==="BEARISH"?C.red:C.amber;
+  const presets = ["Strait of Hormuz oil supply","Fed rates 2026","Defense sector spending","Gold rally","Tanker shipping","Iran military","OPEC production","Geopolitical risk"];
+
+  const ic  = v => v==="BULLISH"?C.green:v==="BEARISH"?C.red:C.textDim;
+  const oc  = v => v==="BULLISH"?C.green:v==="BEARISH"?C.red:v==="MIXED"?C.amber:C.textDim;
+  const catColor = cat => ({"RATES":C.purple,"GEOPOLITICS":C.red,"ENERGY":"#e07b00","MACRO":C.cyan,"CORP":C.amber,"MARKETS":C.green})[cat] || C.textDim;
+
+  const FeaturedStory = ({ item }) => (
+    <div style={{ background:"#0a0a0a", border:`1px solid ${C.borderBright}`, padding:"18px 20px", flex:"0 0 40%", display:"flex", flexDirection:"column", gap:10 }}>
+      <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:4 }}>
+        {item.category && <span style={{ background:catColor(item.category)+"22", color:catColor(item.category), fontFamily:"'IBM Plex Mono',monospace", fontSize:8, fontWeight:700, padding:"2px 7px", letterSpacing:1 }}>{item.category}</span>}
+        <span style={{ background:ic(item.impact)+"22", color:ic(item.impact), fontFamily:"'IBM Plex Mono',monospace", fontSize:8, fontWeight:700, padding:"2px 7px" }}>{item.impact}</span>
+        <Mono color={C.muted} size={8} style={{ marginLeft:"auto" }}>{item.date}</Mono>
+      </div>
+      <p style={{ color:C.white, fontFamily:"'IBM Plex Mono',monospace", fontSize:15, fontWeight:700, lineHeight:1.55, margin:0, letterSpacing:"0.01em" }}>{item.headline}</p>
+      <div style={{ width:40, height:2, background:C.borderBright, margin:"2px 0" }} />
+      <p style={{ color:C.text, fontFamily:"'IBM Plex Mono',monospace", fontSize:11, lineHeight:1.8, margin:0 }}>{item.summary}</p>
+      <Mono color={C.textDim} size={9} style={{ marginTop:"auto" }}>{item.source?.toUpperCase()}</Mono>
+    </div>
+  );
+
+  const SecondaryStory = ({ item }) => (
+    <div style={{ padding:"11px 14px", borderBottom:`1px solid ${C.border}`, display:"flex", gap:12 }}>
+      <div style={{ flex:1 }}>
+        <div style={{ display:"flex", gap:6, alignItems:"center", marginBottom:5 }}>
+          {item.category && <span style={{ background:catColor(item.category)+"18", color:catColor(item.category), fontFamily:"'IBM Plex Mono',monospace", fontSize:7, padding:"1px 5px", letterSpacing:1 }}>{item.category}</span>}
+          <span style={{ background:ic(item.impact)+"18", color:ic(item.impact), fontFamily:"'IBM Plex Mono',monospace", fontSize:7, fontWeight:700, padding:"1px 5px" }}>{item.impact}</span>
+          <Mono color={C.muted} size={8} style={{ marginLeft:"auto" }}>{item.source} · {item.date}</Mono>
+        </div>
+        <Mono color={C.white} size={12} weight={600} style={{ lineHeight:1.5, display:"block", marginBottom:5 }}>{item.headline}</Mono>
+        {item.summary && <Mono color={C.textDim} size={10} style={{ lineHeight:1.6, display:"block" }}>{item.summary}</Mono>}
+      </div>
+    </div>
+  );
 
   return (
     <div>
-      <div style={{ marginBottom:10 }}><SearchInput value={input} onChange={setInput} onSubmit={()=>search()} placeholder="SEARCH: TICKER, TOPIC, MACRO EVENT, OR THEME (auto-loaded)" /></div>
-      <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:16 }}>
-        {presets.map(p => <button key={p} onClick={()=>{setInput(p);search(p);}} style={{ background:"transparent", color:C.muted, border:`1px solid ${C.border}`, fontFamily:"'IBM Plex Mono',monospace", fontSize:9, padding:"4px 10px", cursor:"pointer" }}>{p}</button>)}
-      </div>
-      {loading && <Loader msg="SCANNING MARKET INTELLIGENCE" />}
-      {data && (
+      {/* Header bar */}
+      <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
         <div>
-          <div style={{ background:"#080808", border:`1px solid ${C.borderBright}`, padding:"12px 16px", marginBottom:10 }}>
-            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8 }}>
-              <Mono color={C.amber} size={10} weight={700} spacing={2}>BRIEF: {(data.topic||"").toUpperCase()}</Mono>
-              <span style={{ background:oc+"22", padding:"2px 10px" }}><Mono color={oc} size={10} weight={700}>{data.marketImpact}</Mono></span>
-            </div>
-            <p style={{ color:C.text, fontFamily:"'IBM Plex Mono',monospace", fontSize:12, lineHeight:1.9, margin:"0 0 10px" }}>{data.execSummary}</p>
-            <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:8 }}>
-              <Mono color={C.cyan} size={9} spacing={1}>TRADING TAKE: </Mono>
-              <Mono color={C.text} size={11}>{data.tradingTake}</Mono>
-            </div>
+          <Mono color={C.red} size={11} weight={700} spacing={2}>MARKET INTEL</Mono>
+          {data && <Mono color={C.muted} size={8} style={{ marginLeft:10 }}>
+            {data.items?.length || 0} STORIES · AUTO-UPDATED
+          </Mono>}
+        </div>
+        {data && (
+          <span style={{ marginLeft:8, background:oc(data.marketImpact)+"22", border:`1px solid ${oc(data.marketImpact)}44`, padding:"2px 10px" }}>
+            <Mono color={oc(data.marketImpact)} size={10} weight={700}>{data.marketImpact}</Mono>
+          </span>
+        )}
+        <div style={{ marginLeft:"auto", display:"flex", gap:6 }}>
+          <button onClick={() => setShowSearch(s => !s)}
+            style={{ background:"transparent", color:C.muted, border:`1px solid ${C.border}`, fontFamily:"'IBM Plex Mono',monospace", fontSize:9, padding:"4px 10px", cursor:"pointer" }}>
+            {showSearch ? "✕ CLOSE" : "⌕ SEARCH"}
+          </button>
+          <Btn onClick={() => load("")} disabled={loading} variant="outline" color={C.red}>{loading?"LOADING...":"↺ REFRESH"}</Btn>
+        </div>
+      </div>
+
+      {/* Search bar — hidden by default */}
+      {showSearch && (
+        <div style={{ marginBottom:10 }}>
+          <div style={{ marginBottom:6 }}><SearchInput value={input} onChange={setInput} onSubmit={()=>load()} placeholder="SEARCH: TICKER, TOPIC, MACRO THEME..." /></div>
+          <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
+            {presets.map(p => <button key={p} onClick={()=>{setInput(p);load(p);setShowSearch(false);}} style={{ background:"transparent", color:C.muted, border:`1px solid ${C.border}`, fontFamily:"'IBM Plex Mono',monospace", fontSize:8, padding:"3px 8px", cursor:"pointer" }}>{p}</button>)}
           </div>
-          <div style={{ background:C.panel, border:`1px solid ${C.border}` }}>
-            {(data.items||[]).map((item,i) => (
-              <div key={i} style={{ padding:"9px 14px", borderBottom:`1px solid ${C.border}` }}>
-                <div style={{ display:"flex", gap:12, marginBottom:4, alignItems:"flex-start" }}>
-                  <span style={{ background:ic(item.impact)+"22", color:ic(item.impact), fontFamily:"'IBM Plex Mono',monospace", fontSize:8, fontWeight:700, padding:"2px 5px", whiteSpace:"nowrap" }}>{item.impact}</span>
-                  <Mono color={C.white} size={11} style={{flex:1,lineHeight:1.5}}>{item.headline}</Mono>
-                  <div style={{ textAlign:"right", whiteSpace:"nowrap" }}>
-                    <div><Mono color={C.textDim} size={9}>{item.source}</Mono></div>
-                    <div><Mono color={C.muted} size={9}>{item.date}</Mono></div>
-                  </div>
-                </div>
-                <Mono color={C.textDim} size={10} style={{lineHeight:1.6,display:"block"}}>{item.summary}</Mono>
+        </div>
+      )}
+
+      {loading && <Loader msg="LOADING MARKET INTELLIGENCE FEED" />}
+
+      {data && data.items?.length > 0 && (() => {
+        const [lead, ...rest] = data.items;
+        return (
+          <div>
+            {/* AI brief strip */}
+            {data.execSummary && (
+              <div style={{ background:"rgba(255,80,80,0.06)", border:`1px solid ${C.border}`, borderLeft:`3px solid ${C.red}`, padding:"8px 14px", marginBottom:10, display:"flex", gap:16, alignItems:"center", flexWrap:"wrap" }}>
+                <Mono color={C.red} size={8} weight={700} spacing={2}>BRIEF</Mono>
+                <Mono color={C.text} size={11} style={{ flex:1 }}>{data.execSummary}</Mono>
+                {data.tradingTake && <>
+                  <Mono color={C.cyan} size={8} weight={700} spacing={2}>TAKE</Mono>
+                  <Mono color={C.textDim} size={10} style={{ flex:1 }}>{data.tradingTake}</Mono>
+                </>}
               </div>
-            ))}
+            )}
+
+            {/* Newspaper layout: Feature + secondary grid */}
+            <div style={{ display:"flex", gap:0, border:`1px solid ${C.border}` }}>
+              {/* LEFT: Feature story */}
+              <FeaturedStory item={lead} />
+
+              {/* DIVIDER */}
+              <div style={{ width:1, background:C.border, flexShrink:0 }} />
+
+              {/* RIGHT: 2-column secondary stories */}
+              <div style={{ flex:1, display:"grid", gridTemplateColumns:"1fr 1fr", alignContent:"start" }}>
+                {rest.slice(0, 6).map((item, i) => (
+                  <SecondaryStory key={i} item={item} />
+                ))}
+              </div>
+            </div>
+
+            {/* BELOW: Remaining stories as compact strip */}
+            {rest.length > 6 && (
+              <div style={{ border:`1px solid ${C.border}`, borderTop:"none" }}>
+                {rest.slice(6).map((item, i) => (
+                  <div key={i} style={{ display:"flex", gap:10, padding:"7px 14px", borderBottom:`1px solid ${C.border}`, alignItems:"center" }}>
+                    <span style={{ background:ic(item.impact)+"18", color:ic(item.impact), fontFamily:"'IBM Plex Mono',monospace", fontSize:7, fontWeight:700, padding:"1px 5px", whiteSpace:"nowrap" }}>{item.impact}</span>
+                    {item.category && <span style={{ background:catColor(item.category)+"15", color:catColor(item.category), fontFamily:"'IBM Plex Mono',monospace", fontSize:7, padding:"1px 5px", whiteSpace:"nowrap" }}>{item.category}</span>}
+                    <Mono color={C.text} size={10} style={{ flex:1 }}>{item.headline}</Mono>
+                    <Mono color={C.muted} size={8} style={{ whiteSpace:"nowrap" }}>{item.source}</Mono>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
+        );
+      })()}
+
+      {data && !data.items?.length && (
+        <div style={{ padding:"20px", textAlign:"center" }}>
+          <Mono color={C.muted} size={10}>{data.execSummary || "No articles found."}</Mono>
         </div>
       )}
     </div>
   );
 }
 
+
 // ─── F4: MACRO — MACRO / RATES ───────────────────────────────────────────────
 function MACROPanel() {
-  const [data, setData] = useState(null);
+  const [data, setData]       = useState(null);
   const [loading, setLoading] = useState(false);
+  const [ratesView, setRatesView] = useState("curve"); // "curve" | "real" | "credit"
 
   const load = async () => {
     setLoading(true); setData(null);
     try {
       const d = await fetchMacroData();
       const r = d.rates || {};
-      const fv = (v, dec=2) => v != null ? `${parseFloat(v).toFixed(dec)}%` : "N/A";
-      const bps = v => v != null ? `${(parseFloat(v)*100).toFixed(0)}bps` : "N/A";
-      const spd = v => {
+      const fv  = (v, dec=2) => v != null ? `${parseFloat(v).toFixed(dec)}%` : "N/A";
+      const bps  = v => v != null ? `${(parseFloat(v)*100).toFixed(0)}bps` : "N/A";
+      const spd  = v => {
         if (v == null) return "N/A";
         const n = parseFloat(v);
-        return `${n >= 0 ? "+" : ""}${(n*100).toFixed(0)}bps`;
+        return `${n >= 0 ? "+" : ""}${(n * 100).toFixed(0)}bps`;
       };
+      const yn = (fred, yahoo) => fred ?? yahoo;
+
+      // Build full Treasury curve with every tenor
+      const curve = [
+        { label: "1M",    val: fv(yn(r.t1m,  null)),    raw: r.t1m  },
+        { label: "3M",    val: fv(yn(r.t3m,  r.tnx)),  raw: r.t3m  },
+        { label: "6M",    val: fv(r.t6m),               raw: r.t6m  },
+        { label: "1Y",    val: fv(r.t1y),               raw: r.t1y  },
+        { label: "2Y",    val: fv(r.t2y),               raw: r.t2y,  highlight: true },
+        { label: "5Y",    val: fv(yn(r.t5y, null)),     raw: r.t5y  },
+        { label: "10Y",   val: fv(yn(r.t10y, r.tnx)),  raw: r.t10y, highlight: true },
+        { label: "20Y",   val: fv(r.t20y),              raw: r.t20y },
+        { label: "30Y",   val: fv(yn(r.t30y, r.tyx)),  raw: r.t30y, highlight: true },
+      ].filter(x => x.val !== "N/A");
+
+      const spread2s10s = r.spread2s10s;
+      const spread3m10  = r.spread3m10;
 
       setData({
-        indices:     d.indices,
-        commodities: d.commodities,
-        fx:          d.fx,
-        bonds:       d.bonds,
-        timestamp:   d.timestamp,
+        timestamp:    d.timestamp,
         fredAvailable: d.fredAvailable,
-        rates: [
-          { label: "Fed Funds",      val: fv(r.fedFunds),    highlight: true },
-          { label: "SOFR",           val: fv(r.sofr) },
-          { label: "2Y Treasury",    val: fv(r.t2y) },
-          { label: "5Y Treasury",    val: fv(r.t5y) },
-          { label: "10Y Treasury",   val: fv(r.t10y ?? r.tnx), highlight: true },
-          { label: "30Y Treasury",   val: fv(r.t30y ?? r.tyx) },
-          { label: "2s10s Spread",   val: spd(r.spread2s10s), spread: r.spread2s10s },
-        ],
+        regime:       d.regime || "NEUTRAL",
+        regimeColor:  d.regimeColor || "#888",
+        usIndices:    d.usIndices  || [],
+        globalIndices: d.globalIndices || [],
+        vol:          d.vol || {},
+        crypto:       d.crypto || [],
+        commodities:  d.commodities || [],
+        fx:           d.fx || [],
+        bonds:        d.bonds || {},
+        economic:     d.economic || {},
+        curve,
+        rates: r,
         realRates: [
-          { label: "10Y Real Yield",   val: fv(r.realYield10), note: "TIPS" },
-          { label: "10Y Breakeven",    val: fv(r.breakeven10), note: "Inflation" },
-          { label: "Nom–Real Spread",  val: r.t10y != null && r.realYield10 != null
-              ? fv(r.t10y - r.realYield10) + " nom premium" : "N/A", note: "" },
+          { label: "5Y Real Yield",  val: fv(r.realYield5),  note: "TIPS 5Y" },
+          { label: "10Y Real Yield", val: fv(r.realYield10), note: "TIPS 10Y", highlight: true },
+          { label: "30Y Real Yield", val: fv(r.realYield30), note: "TIPS 30Y" },
+          { label: "5Y Breakeven",   val: fv(r.breakeven5),  note: "Inflation" },
+          { label: "10Y Breakeven",  val: fv(r.breakeven10), note: "Inflation", highlight: true },
+          { label: "Nom−Real",       val: r.t10y != null && r.realYield10 != null ? fv(parseFloat(r.t10y) - parseFloat(r.realYield10)) + " nom prem" : "N/A" },
         ],
-        credit: [
-          { label: "IG OAS",         val: bps(r.igOas),    note: "Inv. Grade" },
-          { label: "HY OAS",         val: bps(r.hyOas),    note: "High Yield" },
-          { label: "TED Spread",     val: bps(r.tedSpread), note: "Credit stress" },
-          { label: "IG ETF (LQD)",   val: d.bonds?.lqdPrice != null ? `$${d.bonds.lqdPrice.toFixed(2)}` : "N/A",
-            chgPct: d.bonds?.lqdChg },
-          { label: "HY ETF (HYG)",   val: d.bonds?.hygPrice != null ? `$${d.bonds.hygPrice.toFixed(2)}` : "N/A",
-            chgPct: d.bonds?.hygChg },
-          { label: "20Y+ Bond (TLT)", val: d.bonds?.tltPrice != null ? `$${d.bonds.tltPrice.toFixed(2)}` : "N/A",
-            chgPct: d.bonds?.tltChg },
+        spreads: [
+          { label: "Fed Funds",      val: fv(r.fedFunds),    note: "Target", highlight: true },
+          { label: "SOFR",           val: fv(r.sofr),        note: "O/N" },
+          { label: "2s10s Spread",   val: spd(spread2s10s),  inv: spread2s10s != null && parseFloat(spread2s10s) < 0 },
+          { label: "3m10Y Spread",   val: spd(spread3m10),   inv: spread3m10  != null && parseFloat(spread3m10)  < 0 },
+          { label: "IG OAS",         val: bps(r.igOas),      note: "Inv Grade" },
+          { label: "HY OAS",         val: bps(r.hyOas),      note: "High Yield", highlight: true },
+          { label: "TED Spread",     val: bps(r.tedSpread),  note: "Credit stress" },
+        ],
+        bondEtfs: [
+          { label: "LQD (IG Corp)",  price: d.bonds?.lqdPrice, chg: d.bonds?.lqdChg },
+          { label: "HYG (HY Corp)",  price: d.bonds?.hygPrice, chg: d.bonds?.hygChg },
+          { label: "TLT (20Y+ UST)", price: d.bonds?.tltPrice, chg: d.bonds?.tltChg },
+          { label: "IEF (7-10Y UST)",price: d.bonds?.iefPrice, chg: d.bonds?.iefChg },
+          { label: "SHY (1-3Y UST)", price: d.bonds?.shyPrice, chg: d.bonds?.shyChg },
+          { label: "AGG (US Agg)",   price: d.bonds?.aggPrice, chg: d.bonds?.aggChg },
         ],
       });
     } catch(e) { console.error(e); }
@@ -968,119 +1088,285 @@ function MACROPanel() {
   };
 
   useEffect(() => { load(); }, []);
-  const cc = v => v == null ? C.muted : v > 0 ? C.green : v < 0 ? C.red : C.text;
-  const sc = v => v == null ? C.muted : parseFloat(v) < 0 ? C.green : C.red; // spread: neg = inverted (red)
 
-  const MiniRow = ({ label, val, chgPct, note, highlight, spread, isSpread }) => (
+  const cc  = v => v == null ? C.muted : parseFloat(v) > 0 ? C.green : parseFloat(v) < 0 ? C.red : C.text;
+  const cc2 = v => v == null ? C.muted : v > 0 ? C.green : v < 0 ? C.red : C.text;
+  const pc  = v => v != null ? `${v > 0 ? "+" : ""}${v.toFixed(2)}%` : "--";
+  const pf  = v => v != null ? (v > 1000 ? v.toLocaleString("en", {maximumFractionDigits: 0}) : v.toFixed(2)) : "--";
+
+  // Mini bar chart for yield curve
+  const CurveBar = ({ tenor, val, maxVal }) => {
+    const numVal = parseFloat(val?.replace("%","")) || 0;
+    const pct = maxVal > 0 ? (numVal / maxVal) * 100 : 0;
+    return (
+      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:2, flex:1, minWidth:30 }}>
+        <Mono color={C.cyan} size={8}>{val}</Mono>
+        <div style={{ width:"100%", height:60, display:"flex", alignItems:"flex-end", justifyContent:"center" }}>
+          <div style={{ width:"70%", height:`${Math.max(pct, 3)}%`, background:`${C.cyan}66`, border:`1px solid ${C.cyan}`, transition:"height 0.3s" }} />
+        </div>
+        <Mono color={C.muted} size={8}>{tenor}</Mono>
+      </div>
+    );
+  };
+
+  const Row = ({ label, val, note, chg, highlight, inv }) => (
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"5px 0", borderBottom:`1px solid ${C.border}` }}>
       <div style={{ display:"flex", gap:8, alignItems:"center" }}>
         <Mono color={highlight ? C.white : C.text} size={11} weight={highlight ? 600 : 400}>{label}</Mono>
         {note && <Mono color={C.muted} size={8}>{note}</Mono>}
+        {inv && <span style={{ background:"rgba(255,68,68,0.15)", color:C.red, fontFamily:"'IBM Plex Mono',monospace", fontSize:7, padding:"1px 4px", letterSpacing:1 }}>INVERTED</span>}
       </div>
-      <div style={{ display:"flex", gap:10, alignItems:"center" }}>
-        {chgPct != null && <Mono color={cc(chgPct)} size={9}>{chgPct > 0 ? "+" : ""}{chgPct?.toFixed(2)}%</Mono>}
-        <Mono color={isSpread ? sc(spread) : C.cyan} size={11} weight={600}>{val}</Mono>
+      <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+        {chg != null && <Mono color={cc2(chg)} size={9}>{pc(chg)}</Mono>}
+        <Mono color={inv ? C.red : C.cyan} size={11} weight={600}>{val ?? "N/A"}</Mono>
       </div>
     </div>
   );
 
+  const IndexRow = ({ name, sym, value, changePct }) => (
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"5px 0", borderBottom:`1px solid ${C.border}` }}>
+      <div>
+        <Mono color={C.text} size={11}>{name}</Mono>
+        <Mono color={C.muted} size={8} style={{ marginLeft:6 }}>{sym}</Mono>
+      </div>
+      <div style={{ textAlign:"right" }}>
+        <Mono color={C.white} size={11} weight={600}>{pf(value)}</Mono>
+        <Mono color={cc2(changePct)} size={10} style={{ marginLeft:8 }}>{pc(changePct)}</Mono>
+      </div>
+    </div>
+  );
+
+  // CB Policy status — hardcoded + regime-aware
+  const cbPolicies = [
+    { name: "Federal Reserve", rate: "4.25–4.50%", stance: "HOLD",    color: C.amber,  note: "Awaiting inflation progress; 1-2 cuts priced 2025" },
+    { name: "ECB",             rate: "2.65%",       stance: "CUTTING", color: C.green,  note: "Easing cycle underway; services inflation elevated" },
+    { name: "Bank of England", rate: "4.50%",       stance: "HOLD",    color: C.amber,  note: "Wage growth remains sticky; gradual easing expected" },
+    { name: "Bank of Japan",   rate: "0.50%",       stance: "HIKING",  color: C.red,    note: "Historic policy normalization; JPY sensitivity high" },
+    { name: "PBoC",            rate: "3.10%",       stance: "EASING",  color: C.green,  note: "Counter-cyclical support; property sector drag" },
+    { name: "SNB",             rate: "0.25%",       stance: "CUTTING", color: C.green,  note: "Disinflation achieved; CHF strength concern" },
+  ];
+
   return (
     <div>
-      {/* Header */}
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
-        <div>
+      {/* ── Header ── */}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+        <div style={{ display:"flex", gap:10, alignItems:"center" }}>
           <Mono color={C.textDim} size={10} spacing={1}>GLOBAL MACRO DASHBOARD</Mono>
-          {data?.timestamp && <Mono color={C.muted} size={8} style={{marginLeft:10}}>AS OF {new Date(data.timestamp).toLocaleTimeString()}</Mono>}
-          {data && !data.fredAvailable && <span style={{ marginLeft:10, background:"rgba(255,165,0,0.15)", border:"1px solid rgba(255,165,0,0.3)", borderRadius:3, padding:"1px 6px" }}><Mono color={C.amber} size={8}>FRED KEY MISSING — RATE DATA LIMITED</Mono></span>}
+          {data?.timestamp && <Mono color={C.muted} size={8}>AS OF {new Date(data.timestamp).toLocaleTimeString()}</Mono>}
+          {data?.regime && (
+            <span style={{ background:data.regimeColor+"22", border:`1px solid ${data.regimeColor}44`, borderRadius:3, padding:"2px 10px" }}>
+              <Mono color={data.regimeColor} size={9} weight={700}>REGIME: {data.regime}</Mono>
+            </span>
+          )}
+          {data && !data.fredAvailable && (
+            <span style={{ background:"rgba(255,165,0,0.12)", border:"1px solid rgba(255,165,0,0.3)", borderRadius:3, padding:"1px 6px" }}>
+              <Mono color={C.amber} size={8}>⚠ FRED KEY MISSING — LIMITED RATE DATA</Mono>
+            </span>
+          )}
         </div>
-        <Btn onClick={load} disabled={loading} variant="outline" color={C.amber}>{loading?"LOADING...":"↺ REFRESH"}</Btn>
+        <Btn onClick={load} disabled={loading} variant="outline" color={C.purple}>{loading?"LOADING...":"↺ REFRESH"}</Btn>
       </div>
 
       {loading && <Loader msg="FETCHING GLOBAL MARKET DATA" />}
 
       {data && (
-        <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-          {/* Row 1: Equities + Rates */}
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
-            <PanelBox title="EQUITY INDICES / VOL">
-              {(data.indices||[]).map(idx => (
-                <div key={idx.sym} style={{ display:"flex", justifyContent:"space-between", padding:"5px 0", borderBottom:`1px solid ${C.border}` }}>
-                  <div><Mono color={C.text} size={11}>{idx.name}</Mono> <Mono color={C.muted} size={9}>{idx.sym}</Mono></div>
-                  <div style={{ textAlign:"right" }}>
-                    <Mono color={C.white} size={12} weight={600}>{idx.value?.toLocaleString("en",{maximumFractionDigits:2})}</Mono>
-                    <Mono color={cc(idx.changePct)} size={10} style={{marginLeft:10}}>{idx.changePct != null ? `${idx.changePct>0?"+":""}${idx.changePct?.toFixed(2)}%` : "--"}</Mono>
-                  </div>
+        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+
+          {/* ── Row 1: US Indices + Global Indices ── */}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+            <PanelBox title="US EQUITY INDICES">
+              {data.usIndices.map(idx => <IndexRow key={idx.sym} {...idx} />)}
+              {/* VIX / MOVE */}
+              <div style={{ marginTop:6, display:"flex", gap:16, paddingTop:6, borderTop:`1px solid ${C.border}` }}>
+                <div>
+                  <Mono color={C.muted} size={8}>VIX</Mono>
+                  <Mono color={data.vol?.vix > 25 ? C.red : data.vol?.vix > 18 ? C.amber : C.green} size={12} weight={700} style={{ display:"block" }}>
+                    {data.vol?.vix?.toFixed(2) ?? "--"}
+                  </Mono>
+                  <Mono color={cc2(data.vol?.vixChg)} size={9}>{pc(data.vol?.vixChg)}</Mono>
                 </div>
-              ))}
-            </PanelBox>
-
-            <PanelBox title="US TREASURY CURVE">
-              {(data.rates||[]).map(r => (
-                <MiniRow key={r.label} label={r.label} val={r.val} highlight={r.highlight}
-                  isSpread={r.label.includes("Spread")} spread={r.spread} />
-              ))}
-            </PanelBox>
-          </div>
-
-          {/* Row 2: Real Yields + Credit */}
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
-            <PanelBox title="REAL YIELDS & INFLATION EXPECTATIONS">
-              {(data.realRates||[]).map(r => (
-                <MiniRow key={r.label} label={r.label} val={r.val} note={r.note} />
-              ))}
-              <div style={{ marginTop:8, padding:"6px 0", borderTop:`1px solid ${C.border}` }}>
-                <Mono color={C.muted} size={9}>10Y Real Yield = 10Y Nominal − 10Y Breakeven.</Mono>
-                <Mono color={C.muted} size={9} style={{display:"block",marginTop:3}}>Negative real yield → gold/risk assets supported.</Mono>
+                <div style={{ width:1, background:C.border }} />
+                <div>
+                  <Mono color={C.muted} size={8}>MOVE INDEX</Mono>
+                  <Mono color={data.vol?.move > 130 ? C.red : data.vol?.move > 100 ? C.amber : C.green} size={12} weight={700} style={{ display:"block" }}>
+                    {data.vol?.move?.toFixed(1) ?? "--"}
+                  </Mono>
+                  <Mono color={cc2(data.vol?.moveChg)} size={9}>{pc(data.vol?.moveChg)}</Mono>
+                </div>
+                <div style={{ width:1, background:C.border }} />
+                <div style={{ flex:1 }}>
+                  <Mono color={C.muted} size={8}>CRYPTO</Mono>
+                  {data.crypto.map(c => (
+                    <div key={c.sym} style={{ display:"flex", justifyContent:"space-between" }}>
+                      <Mono color={C.textDim} size={9}>{c.name}</Mono>
+                      <span>
+                        <Mono color={C.white} size={9} weight={600}>${c.price?.toLocaleString("en",{maximumFractionDigits:0}) ?? "--"}</Mono>
+                        <Mono color={cc2(c.changePct)} size={8} style={{ marginLeft:6 }}>{pc(c.changePct)}</Mono>
+                      </span>
+                    </div>
+                  ))}
+                </div>
               </div>
             </PanelBox>
 
-            <PanelBox title="CREDIT MARKETS">
-              {(data.credit||[]).map(r => (
-                <div key={r.label} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"5px 0", borderBottom:`1px solid ${C.border}` }}>
-                  <div>
-                    <Mono color={C.text} size={11}>{r.label}</Mono>
-                    {r.note && <Mono color={C.muted} size={8} style={{marginLeft:8}}>{r.note}</Mono>}
-                  </div>
-                  <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-                    {r.chgPct != null && <Mono color={cc(r.chgPct)} size={9}>{r.chgPct > 0 ? "+" : ""}{r.chgPct?.toFixed(2)}%</Mono>}
-                    <Mono color={C.cyan} size={11} weight={600}>{r.val}</Mono>
-                  </div>
-                </div>
-              ))}
+            <PanelBox title="GLOBAL EQUITY INDICES">
+              {data.globalIndices.map(idx => <IndexRow key={idx.sym} {...idx} />)}
             </PanelBox>
           </div>
 
-          {/* Row 3: Commodities + FX */}
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+          {/* ── Row 2: Treasury Curve (visual + table) + Real Yields / Credit ── */}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+            <PanelBox title={
+              <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                <span>US TREASURY CURVE</span>
+                <div style={{ display:"flex", gap:4, marginLeft:"auto" }}>
+                  {["curve","real","credit"].map(v => (
+                    <button key={v} onClick={() => setRatesView(v)}
+                      style={{ background: ratesView===v ? `${C.purple}33` : "transparent", color: ratesView===v ? C.purple : C.muted, border:`1px solid ${ratesView===v ? C.purple : C.border}`, fontFamily:"'IBM Plex Mono',monospace", fontSize:7, padding:"2px 7px", cursor:"pointer" }}>
+                      {v.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            }>
+              {ratesView === "curve" && (() => {
+                const validCurve = data.curve.filter(c => c.raw != null);
+                const maxVal = Math.max(...validCurve.map(c => parseFloat(c.raw || 0)));
+                return (
+                  <div>
+                    {/* Visual bar chart */}
+                    {validCurve.length >= 3 && (
+                      <div style={{ display:"flex", gap:4, height:90, alignItems:"flex-end", marginBottom:10, borderBottom:`1px solid ${C.border}`, paddingBottom:8 }}>
+                        {validCurve.map(c => <CurveBar key={c.label} tenor={c.label} val={c.val} maxVal={maxVal} />)}
+                      </div>
+                    )}
+                    {/* Table */}
+                    {data.curve.map(c => <Row key={c.label} label={c.label} val={c.val} highlight={c.highlight} />)}
+                    {/* Key spreads below curve */}
+                    <div style={{ marginTop:6, paddingTop:6, borderTop:`1px solid ${C.border}` }}>
+                      {data.spreads.slice(2, 4).map(s => <Row key={s.label} label={s.label} val={s.val} inv={s.inv} />)}
+                      <Row label="Fed Funds" val={data.spreads[0]?.val} note="Target" highlight />
+                      <Row label="SOFR" val={data.spreads[1]?.val} note="O/N" />
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {ratesView === "real" && (
+                <div>
+                  {data.realRates.map(r => <Row key={r.label} label={r.label} val={r.val} note={r.note} highlight={r.highlight} />)}
+                  <div style={{ marginTop:8, padding:"6px 0", borderTop:`1px solid ${C.border}` }}>
+                    <Mono color={C.muted} size={9}>10Y Real Yield = Nominal 10Y − 10Y Breakeven.</Mono>
+                    <Mono color={C.muted} size={9} style={{ display:"block", marginTop:2 }}>Negative real yield → gold / risk assets supported.</Mono>
+                    <Mono color={C.muted} size={9} style={{ display:"block", marginTop:2 }}>Breakeven = implied inflation expectations.</Mono>
+                  </div>
+                </div>
+              )}
+
+              {ratesView === "credit" && (
+                <div>
+                  {data.spreads.slice(4).map(s => <Row key={s.label} label={s.label} val={s.val} note={s.note} highlight={s.highlight} />)}
+                  <div style={{ marginTop:6, paddingTop:6, borderTop:`1px solid ${C.border}` }}>
+                    <Mono color={C.muted} size={8} style={{ display:"block", marginBottom:8 }}>BOND ETF PRICES</Mono>
+                    {data.bondEtfs.map(b => (
+                      <div key={b.label} style={{ display:"flex", justifyContent:"space-between", padding:"4px 0", borderBottom:`1px solid ${C.border}` }}>
+                        <Mono color={C.text} size={10}>{b.label}</Mono>
+                        <span>
+                          {b.price != null && <Mono color={C.white} size={10} weight={600}>${b.price.toFixed(2)}</Mono>}
+                          {b.chg != null && <Mono color={cc2(b.chg)} size={9} style={{ marginLeft:8 }}>{pc(b.chg)}</Mono>}
+                          {b.price == null && <Mono color={C.muted} size={10}>N/A</Mono>}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </PanelBox>
+
+            {/* Commodities */}
             <PanelBox title="COMMODITIES">
-              {(data.commodities||[]).map(c => (
-                <div key={c.name} style={{ display:"flex", justifyContent:"space-between", padding:"5px 0", borderBottom:`1px solid ${C.border}` }}>
+              {data.commodities.map(c => (
+                <div key={c.sym} style={{ display:"flex", justifyContent:"space-between", padding:"5px 0", borderBottom:`1px solid ${C.border}` }}>
                   <Mono color={C.text} size={11}>{c.name}</Mono>
-                  <div>
+                  <div style={{ textAlign:"right" }}>
                     <Mono color={C.white} size={11} weight={600}>{c.price != null ? `$${c.price.toFixed(2)}` : "--"}</Mono>
-                    <Mono color={cc(c.changePct)} size={10} style={{marginLeft:10}}>{c.changePct != null ? `${c.changePct>0?"+":""}${c.changePct?.toFixed(2)}%` : "--"}</Mono>
-                  </div>
-                </div>
-              ))}
-            </PanelBox>
-
-            <PanelBox title="FX / DOLLAR">
-              {(data.fx||[]).map(f => (
-                <div key={f.pair} style={{ display:"flex", justifyContent:"space-between", padding:"5px 0", borderBottom:`1px solid ${C.border}` }}>
-                  <Mono color={C.text} size={11}>{f.pair}</Mono>
-                  <div>
-                    <Mono color={C.white} size={11} weight={600}>{f.rate != null ? f.rate.toFixed(f.pair.includes("JPY")||f.pair.includes("KRW")?2:4) : "--"}</Mono>
-                    <Mono color={cc(f.changePct)} size={10} style={{marginLeft:10}}>{f.changePct != null ? `${f.changePct>0?"+":""}${f.changePct?.toFixed(2)}%` : "--"}</Mono>
+                    <Mono color={cc2(c.changePct)} size={10} style={{ marginLeft:8 }}>{pc(c.changePct)}</Mono>
                   </div>
                 </div>
               ))}
             </PanelBox>
           </div>
+
+          {/* ── Row 3: FX + Central Bank Policy ── */}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+            <PanelBox title="FX / DOLLAR">
+              {data.fx.map(f => (
+                <div key={f.pair} style={{ display:"flex", justifyContent:"space-between", padding:"5px 0", borderBottom:`1px solid ${C.border}` }}>
+                  <Mono color={f.pair==="DXY" ? C.white : C.text} size={11} weight={f.pair==="DXY" ? 600 : 400}>{f.pair}</Mono>
+                  <div>
+                    <Mono color={C.white} size={11} weight={600}>
+                      {f.rate != null ? f.rate.toFixed(f.pair.includes("JPY")||f.pair.includes("KRW")||f.pair.includes("SEK")?2:4) : "--"}
+                    </Mono>
+                    <Mono color={cc2(f.changePct)} size={10} style={{ marginLeft:8 }}>{pc(f.changePct)}</Mono>
+                  </div>
+                </div>
+              ))}
+            </PanelBox>
+
+            <PanelBox title="CENTRAL BANK POLICY STATUS">
+              {cbPolicies.map(cb => (
+                <div key={cb.name} style={{ padding:"6px 0", borderBottom:`1px solid ${C.border}` }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:3 }}>
+                    <Mono color={C.text} size={11} weight={600}>{cb.name}</Mono>
+                    <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+                      <Mono color={C.cyan} size={10} weight={700}>{cb.rate}</Mono>
+                      <span style={{ background:cb.color+"22", color:cb.color, fontFamily:"'IBM Plex Mono',monospace", fontSize:7, fontWeight:700, padding:"1px 5px", letterSpacing:1 }}>{cb.stance}</span>
+                    </div>
+                  </div>
+                  <Mono color={C.muted} size={9} style={{ lineHeight:1.5, display:"block" }}>{cb.note}</Mono>
+                </div>
+              ))}
+            </PanelBox>
+          </div>
+
+          {/* ── Row 4: Economic Indicators (FRED-gated) ── */}
+          {data.fredAvailable && (
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+              <PanelBox title="ECONOMIC INDICATORS (FRED)">
+                {[
+                  { label: "CPI (YoY)",           val: data.economic.cpi    != null ? `${parseFloat(data.economic.cpi).toFixed(1)}%`    : "N/A", note: "Headline" },
+                  { label: "Core CPI (YoY)",       val: data.economic.coreCpi != null ? `${parseFloat(data.economic.coreCpi).toFixed(1)}%` : "N/A", note: "Ex Food+Energy" },
+                  { label: "Unemployment Rate",    val: data.economic.unrate  != null ? `${parseFloat(data.economic.unrate).toFixed(1)}%`  : "N/A", note: "U-3" },
+                  { label: "U2 Rate",              val: data.economic.u2rate  != null ? `${parseFloat(data.economic.u2rate).toFixed(1)}%`  : "N/A", note: "Job losers+temp off" },
+                  { label: "Nonfarm Payrolls",     val: data.economic.payrolls != null ? `${(parseFloat(data.economic.payrolls)/1000).toFixed(0)}K` : "N/A", note: "Most recent MoM" },
+                ].map(r => <Row key={r.label} label={r.label} val={r.val} note={r.note} />)}
+                <div style={{ marginTop:6, padding:"4px 0", borderTop:`1px solid ${C.border}` }}>
+                  <Mono color={C.muted} size={8}>Data sourced from FRED (St. Louis Fed). Most recent release.</Mono>
+                </div>
+              </PanelBox>
+              <PanelBox title="CREDIT SPREADS & STRESS INDICATORS">
+                {data.spreads.slice(4).map(s => <Row key={s.label} label={s.label} val={s.val} note={s.note} highlight={s.highlight} />)}
+                <div style={{ marginTop:6, padding:"6px 0", borderTop:`1px solid ${C.border}` }}>
+                  <Mono color={C.muted} size={8} style={{ display:"block", lineHeight:1.7 }}>
+                    IG OAS &lt;150bps = tight (risk-on) · &gt;200bps = stressed
+                  </Mono>
+                  <Mono color={C.muted} size={8} style={{ display:"block", lineHeight:1.7 }}>
+                    HY OAS &lt;400bps = risk-on · &gt;600bps = recession signal
+                  </Mono>
+                  <Mono color={C.muted} size={8} style={{ display:"block", lineHeight:1.7 }}>
+                    TED Spread &gt;100bps = interbank credit stress
+                  </Mono>
+                </div>
+              </PanelBox>
+            </div>
+          )}
+
         </div>
       )}
     </div>
   );
 }
+
 
 // ─── F5: LEARN — FINANCE ACADEMY ─────────────────────────────────────────────
 // Curriculum data — the full topic library

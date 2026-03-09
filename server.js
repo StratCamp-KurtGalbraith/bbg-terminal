@@ -286,29 +286,35 @@ function handleFinancials(req, res) {
 
 // ── Route: GET /macro ──────────────────────────────────────────────────────────
 function handleMacro(req, res) {
-  // All symbols via v8/chart — no auth required
   const yahooSymbols = [
-    "^GSPC","^NDX","^DJI","^RUT","^VIX",
-    "CL=F","BZ=F","GC=F","SI=F","NG=F","HG=F","RB=F",
-    "EURUSD=X","GBPUSD=X","USDJPY=X","USDCNH=X","USDBRL=X","USDKRW=X","DX-Y.NYB",
-    "^TNX","^FVX","^TYX","^IRX","^MOVE",
-    "LQD","HYG","TLT","AGG",
+    // US Equity indices + vol
+    "^GSPC","^NDX","^DJI","^RUT","^VIX","^MOVE",
+    // Global equity indices
+    "^STOXX50E","^FTSE","^GDAXI","^FCHI","^N225","^HSI","000300.SS","^AXJO","^KS11",
+    // US Treasury yields
+    "^IRX","^FVX","^TNX","^TYX",
+    // Bond ETFs
+    "LQD","HYG","TLT","AGG","SHY","IEF",
+    // Commodities
+    "CL=F","BZ=F","GC=F","SI=F","NG=F","HG=F","RB=F","ZW=F","ZC=F",
+    // FX
+    "DX-Y.NYB","EURUSD=X","GBPUSD=X","USDJPY=X","USDCNH=X","USDBRL=X","USDKRW=X","USDCHF=X","USDSEK=X",
+    // Crypto
+    "BTC-USD","ETH-USD",
   ];
 
-  // Expanded FRED series
   const fredSeries = FRED_KEY ? [
-    "DFF",      // Fed Funds Rate (actual)
-    "DGS2",     // 2Y Treasury
-    "DGS5",     // 5Y Treasury
-    "DGS10",    // 10Y Treasury
-    "DGS30",    // 30Y Treasury
-    "DFII10",   // 10Y Real (TIPS) yield
-    "T10YIE",   // 10Y Breakeven inflation
-    "SOFR",     // SOFR rate
-    "T10Y2Y",   // 2s10s spread
-    "BAMLC0A0CMEY",   // Investment grade OAS
-    "BAMLH0A0HYM2EY", // High yield OAS
-    "TEDRATE",  // TED spread (credit stress)
+    "DFF","IORB",      // Fed Funds + IOER
+    "DGS1MO","DGS3MO","DGS6MO",  // Short end
+    "DGS1","DGS2","DGS5","DGS10","DGS20","DGS30",
+    "DFII5","DFII10","DFII30",   // Real yields
+    "T5YIE","T10YIE",            // Breakeven inflation
+    "SOFR",
+    "T10Y2Y","T10Y3M",           // Key spreads
+    "BAMLC0A0CMEY","BAMLH0A0HYM2EY","TEDRATE",
+    "CPIAUCSL","CPILFESL",       // CPI, Core CPI
+    "UNRATE","U2RATE",           // Unemployment, U2
+    "PAYEMS",                    // Nonfarm payrolls
   ] : [];
 
   let yahooData = {}, fredData = {};
@@ -318,76 +324,128 @@ function handleMacro(req, res) {
   function respond() {
     if (responded) return;
     responded = true;
-    const by = yahooData; // already keyed by symbol from fetchPricesFallback
+    const by = yahooData;
     const p  = s => by[s]?.price ?? null;
     const pc = s => by[s]?.changePct ?? null;
-
     const fv = id => fredData[id] ?? null;
-    const spread = fv("T10Y2Y");
+    const spread2s10s = fv("T10Y2Y");
+    const spread3m10  = fv("T10Y3M");
+
+    // Compute macro regime based on available signals
+    const vix  = p("^VIX") || 20;
+    const hyOas = fv("BAMLH0A0HYM2EY");
+    const curveInverted = (spread2s10s != null && parseFloat(spread2s10s) < 0) ||
+                          (spread3m10 != null && parseFloat(spread3m10) < 0);
+    let regime = "NEUTRAL", regimeColor = "#888";
+    if (vix < 15 && !curveInverted) { regime = "RISK-ON"; regimeColor = "#00cc66"; }
+    else if (vix > 25 || (hyOas != null && parseFloat(hyOas) > 500)) { regime = "RISK-OFF"; regimeColor = "#ff4444"; }
+    else if (curveInverted) { regime = "LATE CYCLE"; regimeColor = "#ffaa00"; }
+    else if (vix >= 20 && vix <= 25) { regime = "CAUTIOUS"; regimeColor = "#ffcc00"; }
 
     jsonOk(res, {
       timestamp: new Date().toISOString(),
       fredAvailable: fredSeries.length > 0,
-      indices: [
+      regime, regimeColor,
+
+      usIndices: [
         { name: "S&P 500",      sym: "SPX",  value: p("^GSPC"), changePct: pc("^GSPC") },
         { name: "NASDAQ 100",   sym: "NDX",  value: p("^NDX"),  changePct: pc("^NDX")  },
         { name: "DJIA",         sym: "DJIA", value: p("^DJI"),  changePct: pc("^DJI")  },
         { name: "Russell 2000", sym: "RUT",  value: p("^RUT"),  changePct: pc("^RUT")  },
-        { name: "VIX",          sym: "VIX",  value: p("^VIX"),  changePct: pc("^VIX")  },
-        { name: "MOVE Index",   sym: "MOVE", value: p("^MOVE"), changePct: pc("^MOVE") },
       ],
+      globalIndices: [
+        { name: "Euro Stoxx 50", sym: "^STOXX50E", value: p("^STOXX50E"), changePct: pc("^STOXX50E") },
+        { name: "FTSE 100",      sym: "^FTSE",     value: p("^FTSE"),     changePct: pc("^FTSE")     },
+        { name: "DAX",           sym: "^GDAXI",    value: p("^GDAXI"),    changePct: pc("^GDAXI")    },
+        { name: "CAC 40",        sym: "^FCHI",     value: p("^FCHI"),     changePct: pc("^FCHI")     },
+        { name: "Nikkei 225",    sym: "^N225",     value: p("^N225"),     changePct: pc("^N225")     },
+        { name: "Hang Seng",     sym: "^HSI",      value: p("^HSI"),      changePct: pc("^HSI")      },
+        { name: "CSI 300",       sym: "000300.SS",  value: p("000300.SS"), changePct: pc("000300.SS") },
+        { name: "ASX 200",       sym: "^AXJO",     value: p("^AXJO"),     changePct: pc("^AXJO")     },
+        { name: "KOSPI",         sym: "^KS11",     value: p("^KS11"),     changePct: pc("^KS11")     },
+      ],
+      vol: {
+        vix:  p("^VIX"),  vixChg:  pc("^VIX"),
+        move: p("^MOVE"), moveChg: pc("^MOVE"),
+      },
       rates: {
         fedFunds:    fv("DFF"),
-        t2y:         fv("DGS2")  ?? p("^IRX"),
-        t5y:         fv("DGS5"),
-        t10y:        fv("DGS10") ?? p("^TNX"),
-        t30y:        fv("DGS30") ?? p("^TYX"),
-        realYield10: fv("DFII10"),
-        breakeven10: fv("T10YIE"),
         sofr:        fv("SOFR"),
-        spread2s10s: spread != null ? spread / 100 : null,
-        tnx:         p("^TNX"),
-        tyx:         p("^TYX"),
-        igOas:       fv("BAMLC0A0CMEY"),
-        hyOas:       fv("BAMLH0A0HYM2EY"),
-        tedSpread:   fv("TEDRATE"),
+        t1m:  fv("DGS1MO"),
+        t3m:  fv("DGS3MO") ?? p("^IRX"),
+        t6m:  fv("DGS6MO"),
+        t1y:  fv("DGS1"),
+        t2y:  fv("DGS2"),
+        t5y:  fv("DGS5")  ?? p("^FVX"),
+        t10y: fv("DGS10") ?? p("^TNX"),
+        t20y: fv("DGS20"),
+        t30y: fv("DGS30") ?? p("^TYX"),
+        realYield5:  fv("DFII5"),
+        realYield10: fv("DFII10"),
+        realYield30: fv("DFII30"),
+        breakeven5:  fv("T5YIE"),
+        breakeven10: fv("T10YIE"),
+        spread2s10s: spread2s10s != null ? parseFloat(spread2s10s) / 100 : null,
+        spread3m10:  spread3m10  != null ? parseFloat(spread3m10)  / 100 : null,
+        tnx: p("^TNX"), tyx: p("^TYX"),
+        igOas:    fv("BAMLC0A0CMEY"),
+        hyOas:    fv("BAMLH0A0HYM2EY"),
+        tedSpread: fv("TEDRATE"),
+      },
+      economic: {
+        cpi:      fv("CPIAUCSL"),
+        coreCpi:  fv("CPILFESL"),
+        unrate:   fv("UNRATE"),
+        u2rate:   fv("U2RATE"),
+        payrolls: fv("PAYEMS"),
       },
       commodities: [
-        { name: "WTI Crude Oil", sym: "CL=F", price: p("CL=F"), changePct: pc("CL=F") },
-        { name: "Brent Crude",   sym: "BZ=F", price: p("BZ=F"), changePct: pc("BZ=F") },
-        { name: "Gold",          sym: "GC=F", price: p("GC=F"), changePct: pc("GC=F") },
-        { name: "Silver",        sym: "SI=F", price: p("SI=F"), changePct: pc("SI=F") },
-        { name: "Natural Gas",   sym: "NG=F", price: p("NG=F"), changePct: pc("NG=F") },
-        { name: "Copper",        sym: "HG=F", price: p("HG=F"), changePct: pc("HG=F") },
-        { name: "RBOB Gasoline", sym: "RB=F", price: p("RB=F"), changePct: pc("RB=F") },
+        { name: "WTI Crude",     sym: "CL=F",  price: p("CL=F"),  changePct: pc("CL=F")  },
+        { name: "Brent Crude",   sym: "BZ=F",  price: p("BZ=F"),  changePct: pc("BZ=F")  },
+        { name: "Gold",          sym: "GC=F",  price: p("GC=F"),  changePct: pc("GC=F")  },
+        { name: "Silver",        sym: "SI=F",  price: p("SI=F"),  changePct: pc("SI=F")  },
+        { name: "Natural Gas",   sym: "NG=F",  price: p("NG=F"),  changePct: pc("NG=F")  },
+        { name: "Copper",        sym: "HG=F",  price: p("HG=F"),  changePct: pc("HG=F")  },
+        { name: "RBOB Gas",      sym: "RB=F",  price: p("RB=F"),  changePct: pc("RB=F")  },
+        { name: "Wheat",         sym: "ZW=F",  price: p("ZW=F"),  changePct: pc("ZW=F")  },
+        { name: "Corn",          sym: "ZC=F",  price: p("ZC=F"),  changePct: pc("ZC=F")  },
       ],
       fx: [
-        { pair: "DXY Index", rate: p("DX-Y.NYB"), changePct: pc("DX-Y.NYB") },
-        { pair: "EUR/USD",   rate: p("EURUSD=X"), changePct: pc("EURUSD=X") },
-        { pair: "GBP/USD",   rate: p("GBPUSD=X"), changePct: pc("GBPUSD=X") },
-        { pair: "USD/JPY",   rate: p("USDJPY=X"), changePct: pc("USDJPY=X") },
-        { pair: "USD/CNH",   rate: p("USDCNH=X"), changePct: pc("USDCNH=X") },
-        { pair: "USD/BRL",   rate: p("USDBRL=X"), changePct: pc("USDBRL=X") },
-        { pair: "USD/KRW",   rate: p("USDKRW=X"), changePct: pc("USDKRW=X") },
+        { pair: "DXY",      rate: p("DX-Y.NYB"), changePct: pc("DX-Y.NYB") },
+        { pair: "EUR/USD",  rate: p("EURUSD=X"), changePct: pc("EURUSD=X") },
+        { pair: "GBP/USD",  rate: p("GBPUSD=X"), changePct: pc("GBPUSD=X") },
+        { pair: "USD/JPY",  rate: p("USDJPY=X"), changePct: pc("USDJPY=X") },
+        { pair: "USD/CNH",  rate: p("USDCNH=X"), changePct: pc("USDCNH=X") },
+        { pair: "USD/CHF",  rate: p("USDCHF=X"), changePct: pc("USDCHF=X") },
+        { pair: "USD/BRL",  rate: p("USDBRL=X"), changePct: pc("USDBRL=X") },
+        { pair: "USD/KRW",  rate: p("USDKRW=X"), changePct: pc("USDKRW=X") },
+        { pair: "USD/SEK",  rate: p("USDSEK=X"), changePct: pc("USDSEK=X") },
       ],
       bonds: {
-        lqdPrice:  p("LQD"),  lqdChg: pc("LQD"),
-        hygPrice:  p("HYG"),  hygChg: pc("HYG"),
-        tltPrice:  p("TLT"),  tltChg: pc("TLT"),
-        aggPrice:  p("AGG"),  aggChg: pc("AGG"),
+        lqdPrice: p("LQD"), lqdChg: pc("LQD"),
+        hygPrice: p("HYG"), hygChg: pc("HYG"),
+        tltPrice: p("TLT"), tltChg: pc("TLT"),
+        aggPrice: p("AGG"), aggChg: pc("AGG"),
+        shyPrice: p("SHY"), shyChg: pc("SHY"),
+        iefPrice: p("IEF"), iefChg: pc("IEF"),
       },
+      crypto: [
+        { name: "Bitcoin",  sym: "BTC-USD", price: p("BTC-USD"), changePct: pc("BTC-USD") },
+        { name: "Ethereum", sym: "ETH-USD", price: p("ETH-USD"), changePct: pc("ETH-USD") },
+      ],
     });
   }
 
   function tick() { pending--; if (pending <= 0) respond(); }
 
-  // Use v8 chart API — no auth, always works
+  // Timeout safety — respond after 8s regardless
+  setTimeout(() => { if (!responded) respond(); }, 8000);
+
   fetchPricesFallback(yahooSymbols).then(data => {
     yahooData = data;
     tick();
   }).catch(() => tick());
 
-  // FRED fetches — parallel
   fredSeries.forEach(id => {
     fredGet(id, (err, val) => {
       fredData[id] = val;
