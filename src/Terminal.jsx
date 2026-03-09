@@ -74,6 +74,30 @@ function parseJSON(txt) {
   return null;
 }
 
+// ─── YAHOO FINANCE HELPERS (local only) ──────────────────────────────────────
+const PROXY = "http://localhost:3001";
+
+async function fetchLivePrices(symbols) {
+  // symbols: array like ["GLD","XOM","RTX"]
+  const r = await fetch(`${PROXY}/prices?symbols=${symbols.join(",")}`);
+  if (!r.ok) throw new Error(`Yahoo prices HTTP ${r.status}`);
+  return r.json(); // { prices: {SYM: number}, details: {...}, timestamp: "..." }
+}
+
+async function fetchLiveQuote(symbol) {
+  const r = await fetch(`${PROXY}/quote?symbol=${symbol}`);
+  if (!r.ok) throw new Error(`Yahoo quote HTTP ${r.status}`);
+  return r.json();
+}
+
+function fmtNum(n, decimals = 2) {
+  if (n == null) return null;
+  if (Math.abs(n) >= 1e12) return `$${(n/1e12).toFixed(1)}T`;
+  if (Math.abs(n) >= 1e9)  return `$${(n/1e9).toFixed(1)}B`;
+  if (Math.abs(n) >= 1e6)  return `$${(n/1e6).toFixed(1)}M`;
+  return `$${n.toFixed(decimals)}`;
+}
+
 // ─── SHARED COMPONENTS ───────────────────────────────────────────────────────
 const Mono = ({ children, color, size = 11, weight = 400, spacing = 0, style = {} }) => (
   <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: color || C.text, fontSize: size, fontWeight: weight, letterSpacing: spacing, ...style }}>
@@ -144,13 +168,40 @@ function EQPanel() {
     setLoading(true); setErr(""); setData(null);
     const sym = input.toUpperCase().trim();
     try {
-      const prompt = `Use web search to find CURRENT real-time financial data for stock ticker: ${sym} as of today.
-Return ONLY this JSON object with real live data (absolutely no placeholders, all numbers must be real):
-{"ticker":"${sym}","company":"full name","exchange":"NYSE/NASDAQ/etc","price":number,"change":number,"changePct":number,"volume":"formatted","avgVolume":"formatted","marketCap":"formatted","pe":number_or_null,"forwardPe":number_or_null,"eps":number,"pb":number_or_null,"evEbitda":number_or_null,"grossMargin":"pct%","operatingMargin":"pct%","netMargin":"pct%","revenue":"TTM formatted","ebitda":"formatted","freeCashFlow":"formatted","debtEquity":number_or_null,"currentRatio":number_or_null,"beta":number_or_null,"week52High":number,"week52Low":number,"dividendYield":"pct% or null","shortInterest":"pct%","analystRating":"BUY/OVERWEIGHT/HOLD/UNDERWEIGHT/SELL","analystCount":number,"priceTarget":number_or_null,"sector":"sector","industry":"industry","analysis":"5 sentence institutional fundamental analysis: business model, moat, recent performance, balance sheet quality, 12-month outlook","catalysts":["c1","c2","c3"],"risks":["r1","r2","r3"],"news":[{"headline":"text","source":"name","date":"date","impact":"BULLISH/BEARISH/NEUTRAL","summary":"1 sentence"}]}`;
+      let livePrice = null, liveChange = null, liveChangePct = null, liveVolume = null, liveMktCap = null;
+
+      // Step 1: Pull real-time price from Yahoo Finance when running locally
+      if (IS_LOCAL) {
+        try {
+          const priceData = await fetchLivePrices([sym]);
+          const d = priceData?.details?.[sym];
+          if (d) {
+            livePrice     = d.price;
+            liveChange    = d.change;
+            liveChangePct = d.changePct;
+            liveVolume    = d.volume ? (d.volume > 1e6 ? `${(d.volume/1e6).toFixed(1)}M` : `${(d.volume/1e3).toFixed(0)}K`) : null;
+            liveMktCap    = d.marketCap ? fmtNum(d.marketCap, 0) : null;
+          }
+        } catch(e) { console.warn("Yahoo price fetch failed, falling back to AI:", e.message); }
+      }
+
+      // Step 2: Ask Claude for fundamentals, analysis, news (inject live price if we have it)
+      const priceNote = livePrice ? `The CURRENT real-time price is $${livePrice.toFixed(2)}, change ${liveChange?.toFixed(2)} (${liveChangePct?.toFixed(2)}%). Use this exact price — do NOT substitute your own.` : "Use web search for the current price.";
+      const prompt = `${priceNote}
+Find financial data for stock ticker: ${sym}.
+Return ONLY this JSON (no placeholders):
+{"ticker":"${sym}","company":"full name","exchange":"NYSE/NASDAQ/etc","price":${livePrice ?? "number"},"change":${liveChange ?? "number"},"changePct":${liveChangePct ?? "number"},"volume":"${liveVolume ?? "formatted"}","avgVolume":"formatted","marketCap":"${liveMktCap ?? "formatted"}","pe":number_or_null,"forwardPe":number_or_null,"eps":number,"pb":number_or_null,"evEbitda":number_or_null,"grossMargin":"pct%","operatingMargin":"pct%","netMargin":"pct%","revenue":"TTM formatted","ebitda":"formatted","freeCashFlow":"formatted","debtEquity":number_or_null,"currentRatio":number_or_null,"beta":number_or_null,"week52High":number,"week52Low":number,"dividendYield":"pct% or null","shortInterest":"pct%","analystRating":"BUY/OVERWEIGHT/HOLD/UNDERWEIGHT/SELL","analystCount":number,"priceTarget":number_or_null,"sector":"sector","industry":"industry","analysis":"5 sentence institutional fundamental analysis: business model, moat, recent performance, balance sheet quality, 12-month outlook","catalysts":["c1","c2","c3"],"risks":["r1","r2","r3"],"news":[{"headline":"text","source":"name","date":"date","impact":"BULLISH/BEARISH/NEUTRAL","summary":"1 sentence"}]}`;
       const txt = await fetchAI(prompt, "You are an institutional financial analyst terminal. Return ONLY valid compact JSON, no markdown, no prose.", 2000);
       const parsed = parseJSON(txt);
-      if (parsed) setData(parsed);
-      else setErr("Parse error — try again.");
+      if (parsed) {
+        // Override with Yahoo Finance real-time data if available
+        if (livePrice)     parsed.price      = livePrice;
+        if (liveChange)    parsed.change     = liveChange;
+        if (liveChangePct) parsed.changePct  = liveChangePct;
+        if (liveVolume)    parsed.volume     = liveVolume;
+        if (liveMktCap)    parsed.marketCap  = liveMktCap;
+        setData(parsed);
+      } else setErr("Parse error — try again.");
     } catch(e) { setErr(e.message); }
     setLoading(false);
   };
@@ -288,12 +339,20 @@ function PORTPanel() {
   const refresh = async () => {
     setLoading(true);
     try {
-      const syms = PORTFOLIO.map(p=>p.sym).join(", ");
-      const prompt = `Search for TODAY's current real-time stock prices for: ${syms}. Return ONLY: {"prices":{"GLD":number,"XOM":number,"RTX":number,"LMT":number,"FRO":number,"FLR":number},"timestamp":"current datetime string"}`;
-      const txt = await fetchAI(prompt, "Return ONLY valid compact JSON, no markdown.", 800);
-      const parsed = parseJSON(txt);
-      if (parsed?.prices) { setPrices(parsed.prices); setTs(parsed.timestamp||""); }
-    } catch(e) { console.error(e); }
+      if (IS_LOCAL) {
+        // Use Yahoo Finance via local proxy — real-time accurate prices
+        const syms = PORTFOLIO.map(p => p.sym);
+        const data = await fetchLivePrices(syms);
+        if (data?.prices) { setPrices(data.prices); setTs(data.timestamp || ""); }
+      } else {
+        // Claude.ai: use AI web search
+        const syms = PORTFOLIO.map(p=>p.sym).join(", ");
+        const prompt = `Search for TODAY's current real-time stock prices for: ${syms}. Return ONLY: {"prices":{"GLD":number,"XOM":number,"RTX":number,"LMT":number,"FRO":number,"FLR":number},"timestamp":"current datetime string"}`;
+        const txt = await fetchAI(prompt, "Return ONLY valid compact JSON, no markdown.", 800);
+        const parsed = parseJSON(txt);
+        if (parsed?.prices) { setPrices(parsed.prices); setTs(parsed.timestamp||""); }
+      }
+    } catch(e) { console.error("Price refresh error:", e); }
     setLoading(false);
   };
 
