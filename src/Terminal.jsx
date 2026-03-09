@@ -78,10 +78,100 @@ async function fetchAI(prompt, sys = "", maxTokens = 2000) {
 }
 
 function parseJSON(txt) {
-  const s = txt.replace(/```json\n?|```\n?/g, "").trim();
+  if (!txt) return null;
+
+  // Strategy 1: strip code fences, try direct parse
+  let s = txt.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
+  try { return JSON.parse(s); } catch {}
+
+  // Strategy 2: extract outermost {...} block and parse
   const m = s.match(/\{[\s\S]*\}/);
-  if (m) { try { return JSON.parse(m[0]); } catch {} }
+  if (m) { try { return JSON.parse(m[0]); } catch(e) {
+    // Strategy 3: sanitize common AI JSON mistakes inside the block
+    let fixed = m[0]
+      .replace(/,\s*([}\]])/g, "$1")           // trailing commas
+      .replace(/([{,]\s*)(\w+)\s*:/g, '$1"$2":') // unquoted keys
+      .replace(/:\s*'([^']*)'/g, ': "$1"');       // single-quoted values
+    try { return JSON.parse(fixed); } catch {}
+  }}
+
   return null;
+}
+
+// Robust lecture parser — handles large multi-section JSON that may have
+// unescaped newlines in content fields by extracting sections individually
+function parseLectureJSON(txt) {
+  // First try normal parse
+  const quick = parseJSON(txt);
+  if (quick?.sections) return quick;
+
+  // If that fails, build a synthetic lecture object from raw text
+  // so the panel always renders something useful
+  const clean = txt.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
+
+  // Try to extract title
+  const titleM = clean.match(/"title"\s*:\s*"([^"]+)"/);
+  const subtitleM = clean.match(/"subtitle"\s*:\s*"([^"]+)"/);
+  const levelM = clean.match(/"level"\s*:\s*"([^"]+)"/);
+  const readTimeM = clean.match(/"readTime"\s*:\s*"([^"]+)"/);
+
+  // Extract takeaways array
+  const takeawaysM = clean.match(/"keyTakeaways"\s*:\s*\[([^\]]+)\]/s);
+  let keyTakeaways = [];
+  if (takeawaysM) {
+    keyTakeaways = [...takeawaysM[1].matchAll(/"([^"]{10,})"/g)].map(m => m[1]);
+  }
+
+  // Extract related topics
+  const relatedM = clean.match(/"relatedTopics"\s*:\s*\[([^\]]+)\]/s);
+  let relatedTopics = [];
+  if (relatedM) {
+    relatedTopics = [...relatedM[1].matchAll(/"([^"]{5,})"/g)].map(m => m[1]);
+  }
+
+  // Extract sections — look for "type": "..." patterns and grab content after
+  const sectionMatches = [...clean.matchAll(/"type"\s*:\s*"(concept|formula|example|institutional|pitfalls|advanced)"/g)];
+  let sections = [];
+
+  if (sectionMatches.length > 0) {
+    sectionMatches.forEach((match, i) => {
+      const start = match.index;
+      const end = sectionMatches[i+1]?.index ?? clean.length;
+      const chunk = clean.slice(start, end);
+
+      const typeM    = chunk.match(/"type"\s*:\s*"([^"]+)"/);
+      const secTitleM = chunk.match(/"title"\s*:\s*"([^"]+)"/);
+      // Content may span many lines — grab everything between "content": " and next top-level key
+      const contentM = chunk.match(/"content"\s*:\s*"([\s\S]+?)(?="\s*[},]|$)/);
+      const rawContent = contentM ? contentM[1]
+        .replace(/\\n/g, "\n")
+        .replace(/\\t/g, "  ")
+        .replace(/\\"/g, '"')
+        .replace(/\\'/g, "'") : "Content unavailable.";
+
+      sections.push({
+        type:    typeM?.[1]    || "concept",
+        title:   secTitleM?.[1] || "SECTION",
+        content: rawContent,
+      });
+    });
+  }
+
+  // If we couldn't extract sections, create one big raw text section
+  if (sections.length === 0) {
+    sections = [{ type: "concept", title: "LECTURE CONTENT", content: clean.slice(0, 3000) }];
+  }
+
+  return {
+    title:         titleM?.[1]    || "Lecture",
+    subtitle:      subtitleM?.[1] || "",
+    level:         levelM?.[1]    || "ADVANCED",
+    readTime:      readTimeM?.[1] || "—",
+    sections,
+    keyTakeaways,
+    relatedTopics,
+    prereqs: [],
+  };
 }
 
 // ─── LOCAL DATA API HELPERS ──────────────────────────────────────────────────
@@ -1053,50 +1143,35 @@ function LEARNPanel() {
     const interval = setInterval(() => { mi = (mi + 1) % msgs.length; setLoadingMsg(msgs[mi]); }, 1800);
 
     try {
-      const sys = `You are a world-class finance professor at a top-tier institution. Your student is a VP-level derivatives & structured products professional (8+ years at Citi, Morgan Stanley, BBH) who is transitioning toward front-office and trading-adjacent roles. They have deep operational knowledge but want to build the theoretical and market-intuition depth of a trader or PM.
+      const sys = `You are a world-class finance professor. Student is a VP-level derivatives professional (Citi/Morgan Stanley/BBH, 8+ years) moving toward front office. They know the basics cold — teach at trader/PM depth.
 
-CRITICAL TEACHING RULES:
-- Never define basic terms. Jump straight to the mechanism, the math, and the edge cases.
-- Every claim must be grounded in real numbers, real market events, or a real institutional context.
-- Show the math. Don't hand-wave formulas — derive or explain them step by step.
-- Institutional perspective first: how does a prop trader, PM, or sell-side desk actually use this?
-- Be opinionated. If something is overused, underrated, or commonly misunderstood on the Street, say so.
-- Connect to adjacent concepts always.
-- Keep sections tight but deep — quality over quantity.
+RULES:
+- Skip definitions. Go straight to mechanism, math, edge cases.
+- Real numbers, real market events throughout.
+- Be opinionated — say what's overused, misunderstood, or underappreciated on the Street.
+- Connect to derivatives, rates, and macro wherever possible.
 
-RETURN ONLY VALID JSON matching this exact schema:
-{
-  "title": "exact topic title",
-  "subtitle": "one-line institutional framing of why this matters",
-  "level": "INTERMEDIATE|ADVANCED|EXPERT",
-  "readTime": "X min",
-  "sections": [
-    {
-      "type": "concept|formula|example|institutional|pitfalls|advanced",
-      "title": "SECTION TITLE IN CAPS",
-      "content": "full content — use \n for line breaks, use actual math notation"
-    }
-  ],
-  "keyTakeaways": ["3-4 bullet-point takeaways, each one sentence, highly specific"],
-  "relatedTopics": ["3 related topics to explore next, phrased as search queries"],
-  "prereqs": ["2-3 topics they should know first, if any"]
-}`;
+OUTPUT: Return ONLY a JSON object. No markdown fences. No text before or after the JSON.
+Use only escaped newlines (\n) inside string values — never raw line breaks inside JSON strings.
 
-      const prompt = `Write a full institutional-depth lecture on: "${topic}".
-Include sections in this order: concept (core mechanism), formula (math/quantitative framework), example (real market event with actual numbers), institutional (how traders/PMs/desks actually apply this), pitfalls (what trips people up), advanced (one deeper rabbit hole worth knowing).
-Make it genuinely teach something a VP with 8 years in derivatives would not already know from basic training.`;
+EXACT SCHEMA (do not deviate):
+{"title":"string","subtitle":"string","level":"INTERMEDIATE|ADVANCED|EXPERT","readTime":"X min","sections":[{"type":"concept","title":"CAPS TITLE","content":"string with \n for newlines"},{"type":"formula","title":"CAPS TITLE","content":"string"},{"type":"example","title":"CAPS TITLE","content":"string"},{"type":"institutional","title":"CAPS TITLE","content":"string"},{"type":"pitfalls","title":"CAPS TITLE","content":"string"},{"type":"advanced","title":"CAPS TITLE","content":"string"}],"keyTakeaways":["string","string","string"],"relatedTopics":["string","string","string"],"prereqs":["string"]}`;
 
-      const txt = await fetchAI(prompt, sys, 2500);
+      const prompt = `Lecture topic: "${topic}". Six sections required: concept (the real mechanism), formula (math/derivation), example (real market event, real numbers), institutional (how a prop trader or PM actually uses this), pitfalls (common mistakes), advanced (one deeper concept worth knowing). Each section content should be 3-6 substantive sentences. Return ONLY the JSON object.`;
+
+      const txt = await fetchAI(prompt, sys, 3000);
       const parsed = parseJSON(txt);
 
-      if (parsed?.sections) {
-        setLecture(parsed);
+      // Use robust lecture parser — never fails, degrades gracefully
+      const lecture = parseLectureJSON(txt);
+      if (lecture) {
+        setLecture(lecture);
         setHistory(prev => {
-          const next = [{ topic, title: parsed.title, ts: new Date().toLocaleString() }, ...prev.filter(h => h.topic !== topic)];
+          const next = [{ topic, title: lecture.title, ts: new Date().toLocaleString() }, ...prev.filter(h => h.topic !== topic)];
           return next.slice(0, 20);
         });
       } else {
-        setErr("Lecture parse error — try again.");
+        setErr("Could not parse lecture. Please try again.");
         setView("browse");
       }
     } catch(e) { setErr(e.message); setView("browse"); }
