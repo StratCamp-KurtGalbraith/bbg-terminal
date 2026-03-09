@@ -29,33 +29,76 @@ let yahooCrumb  = "";
 let crumbExpiry = 0;
 
 function refreshYahooCrumb(cb) {
-  // Step 1: hit the consent/crumb endpoint to get a session cookie
-  const req = https.request({
-    hostname: "query1.finance.yahoo.com",
+  // Step 1: Get session cookie from Yahoo Finance homepage
+  const step1 = https.request({
+    hostname: "finance.yahoo.com",
     port: 443,
-    path: "/v1/test/getcrumb",
+    path: "/",
     method: "GET",
     headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
-      "Accept": "text/plain,*/*",
+      "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
+      "Accept":          "text/html,application/xhtml+xml,*/*;q=0.8",
       "Accept-Language": "en-US,en;q=0.9",
     },
-  }, (res) => {
-    // Save all cookies from this response
-    const cookies = res.headers["set-cookie"] || [];
+  }, (res1) => {
+    const cookies = res1.headers["set-cookie"] || [];
     yahooCookie = cookies.map(c => c.split(";")[0]).join("; ");
-    let crumb = "";
-    res.on("data", c => crumb += c);
-    res.on("end", () => {
-      yahooCrumb  = crumb.trim();
-      crumbExpiry = Date.now() + 29 * 60 * 1000; // 29 min TTL
-      console.log(`  Yahoo crumb refreshed: ${yahooCrumb.slice(0,12)}... cookie: ${yahooCookie.slice(0,30)}...`);
-      cb(null);
+    res1.resume(); // drain
+    res1.on("end", () => {
+      // Step 2: fetch crumb with session cookie
+      const step2 = https.request({
+        hostname: "query1.finance.yahoo.com",
+        port: 443,
+        path: "/v1/test/getcrumb",
+        method: "GET",
+        headers: {
+          "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
+          "Accept":          "text/plain, */*",
+          "Accept-Language": "en-US,en;q=0.9",
+          "Cookie":          yahooCookie,
+          "Referer":         "https://finance.yahoo.com/",
+        },
+      }, (res2) => {
+        // Merge any new cookies
+        const newCookies = res2.headers["set-cookie"] || [];
+        if (newCookies.length) {
+          const existing = yahooCookie.split("; ").filter(Boolean);
+          newCookies.forEach(c => { const kv = c.split(";")[0]; if (kv) existing.push(kv); });
+          yahooCookie = [...new Set(existing)].join("; ");
+        }
+        let body = "";
+        res2.on("data", c => body += c);
+        res2.on("end", () => {
+          let crumb = body.trim();
+          // Yahoo sometimes returns JSON instead of plain text crumb
+          if (crumb.startsWith("{") || crumb.startsWith("[")) {
+            try {
+              const parsed = JSON.parse(crumb);
+              crumb = parsed?.crumb || parsed?.finance?.crumb || "";
+            } catch(e) { crumb = ""; }
+          }
+          if (crumb && crumb.length > 2) {
+            yahooCrumb  = crumb;
+            crumbExpiry = Date.now() + 29 * 60 * 1000;
+            console.log(`  Yahoo crumb: ${yahooCrumb.slice(0,10)}...`);
+            cb(null);
+          } else {
+            // No crumb — proceed without, cookie alone may be sufficient
+            yahooCrumb  = "";
+            crumbExpiry = Date.now() + 5 * 60 * 1000;
+            console.warn(`  Yahoo crumb unavailable (body: "${body.slice(0,60)}") — proceeding with cookie only`);
+            cb(null);
+          }
+        });
+      });
+      step2.on("error", cb);
+      step2.setTimeout(8000, () => { step2.destroy(); cb(new Error("crumb timeout")); });
+      step2.end();
     });
   });
-  req.on("error", cb);
-  req.setTimeout(8000, () => { req.destroy(); cb(new Error("crumb timeout")); });
-  req.end();
+  step1.on("error", cb);
+  step1.setTimeout(10000, () => { step1.destroy(); cb(new Error("Yahoo homepage timeout")); });
+  step1.end();
 }
 
 function ensureCrumb(cb) {
@@ -172,24 +215,45 @@ function handlePrices(req, res) {
   const symbols = (q.symbols || "").toUpperCase().trim();
   if (!symbols) return jsonErr(res, 400, "symbols required");
 
-  const fields = "regularMarketPrice,regularMarketChange,regularMarketChangePercent,regularMarketVolume,marketCap,regularMarketPreviousClose";
+  const symsArr = symbols.split(",").map(s => s.trim()).filter(Boolean);
+  const fields  = "regularMarketPrice,regularMarketChange,regularMarketChangePercent,regularMarketVolume,marketCap,regularMarketPreviousClose";
+
   yahooGet(`/v7/finance/quote?symbols=${encodeURIComponent(symbols)}&fields=${fields}`, (err, data, status) => {
-    if (err) return jsonErr(res, 502, `Yahoo Finance: ${err.message}`);
-    if (status !== 200) return jsonErr(res, 502, `Yahoo returned ${status}`);
-    const quotes  = data?.quoteResponse?.result || [];
-    const prices  = {}, details = {};
-    quotes.forEach(q => {
-      prices[q.symbol] = q.regularMarketPrice;
-      details[q.symbol] = {
-        price:     q.regularMarketPrice,
-        change:    q.regularMarketChange,
-        changePct: q.regularMarketChangePercent,
-        volume:    q.regularMarketVolume,
-        marketCap: q.marketCap,
-        prevClose: q.regularMarketPreviousClose,
-      };
+    const quotes = data?.quoteResponse?.result || [];
+    const goodQuotes = quotes.filter(q => q.regularMarketPrice != null);
+
+    if (!err && status === 200 && goodQuotes.length > 0) {
+      // v7 batch worked
+      const prices = {}, details = {};
+      goodQuotes.forEach(q => {
+        prices[q.symbol] = q.regularMarketPrice;
+        details[q.symbol] = {
+          price:     q.regularMarketPrice,
+          change:    q.regularMarketChange,
+          changePct: q.regularMarketChangePercent,
+          volume:    q.regularMarketVolume,
+          marketCap: q.marketCap,
+          prevClose: q.regularMarketPreviousClose,
+        };
+      });
+      console.log(`  /prices v7 OK: ${Object.keys(prices).join(",")}`);
+      return jsonOk(res, { prices, details, timestamp: new Date().toISOString(), source: "v7" });
+    }
+
+    // Fallback: v8 chart API (one call per symbol, no crumb needed)
+    console.warn(`  /prices v7 failed (${err?.message || status}) — falling back to v8 chart API`);
+    fetchPricesFallback(symsArr).then(fallbackData => {
+      const prices = {}, details = {};
+      Object.entries(fallbackData).forEach(([sym, d]) => {
+        prices[sym] = d.price;
+        details[sym] = d;
+      });
+      if (Object.keys(prices).length === 0) {
+        return jsonErr(res, 502, `Yahoo Finance unavailable: ${err?.message || "no data returned"}`);
+      }
+      console.log(`  /prices v8 fallback OK: ${Object.keys(prices).join(",")}`);
+      jsonOk(res, { prices, details, timestamp: new Date().toISOString(), source: "v8-fallback" });
     });
-    jsonOk(res, { prices, details, timestamp: new Date().toISOString() });
   });
 }
 
@@ -441,3 +505,40 @@ server.listen(PORT, () => {
     console.log(`\n    Start UI: npm run dev  →  http://localhost:5173\n`);
   });
 });
+
+// ── Fallback: GET /prices via v8 chart API (one call per symbol, no crumb needed) ──
+// Used automatically if v7 batch fails
+async function fetchPricesFallback(symbols) {
+  return new Promise((resolve) => {
+    const results = {};
+    let pending = symbols.length;
+    if (pending === 0) return resolve(results);
+
+    symbols.forEach(sym => {
+      httpsGet({
+        hostname: "query1.finance.yahoo.com",
+        port: 443,
+        path: `/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=1d`,
+        method: "GET",
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
+          "Accept": "application/json",
+        },
+      }, (err, data) => {
+        if (!err) {
+          const meta = data?.chart?.result?.[0]?.meta;
+          if (meta?.regularMarketPrice) {
+            results[sym] = {
+              price:     meta.regularMarketPrice,
+              change:    meta.regularMarketPrice - meta.previousClose,
+              changePct: ((meta.regularMarketPrice - meta.previousClose) / meta.previousClose) * 100,
+              prevClose: meta.previousClose,
+            };
+          }
+        }
+        pending--;
+        if (pending === 0) resolve(results);
+      });
+    });
+  });
+}
